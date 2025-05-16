@@ -1,0 +1,77 @@
+Initializing environment for cost minimization...
+Starting training for cost minimization...
+Episode 100/6000, Epsilon: 0.975, Avg Cost (last 100): 5921.14
+Episode 200/6000, Epsilon: 0.950, Avg Cost (last 100): 6112.05
+Episode 300/6000, Epsilon: 0.925, Avg Cost (last 100): 5705.39
+Episode 400/6000, Epsilon: 0.900, Avg Cost (last 100): 5326.64
+Episode 500/6000, Epsilon: 0.875, Avg Cost (last 100): 4840.37
+Episode 600/6000, Epsilon: 0.850, Avg Cost (last 100): 4433.06
+Episode 700/6000, Epsilon: 0.825, Avg Cost (last 100): 4125.51
+Episode 800/6000, Epsilon: 0.800, Avg Cost (last 100): 3861.58
+Episode 900/6000, Epsilon: 0.775, Avg Cost (last 100): 3229.99
+Episode 1000/6000, Epsilon: 0.750, Avg Cost (last 100): 3068.23
+Episode 1100/6000, Epsilon: 0.725, Avg Cost (last 100): 2905.35
+Episode 1200/6000, Epsilon: 0.700, Avg Cost (last 100): 2466.20
+Episode 1300/6000, Epsilon: 0.675, Avg Cost (last 100): 2329.72
+Episode 1400/6000, Epsilon: 0.650, Avg Cost (last 100): 2210.94
+Episode 1500/6000, Epsilon: 0.625, Avg Cost (last 100): 2196.31
+Episode 1600/6000, Epsilon: 0.600, Avg Cost (last 100): 1889.07
+Episode 1700/6000, Epsilon: 0.575, Avg Cost (last 100): 1864.01
+Episode 1800/6000, Epsilon: 0.550, Avg Cost (last 100): 1635.27
+Episode 1900/6000, Epsilon: 0.525, Avg Cost (last 100): 1643.53
+Episode 2000/6000, Epsilon: 0.500, Avg Cost (last 100): 1481.73
+Episode 2100/6000, Epsilon: 0.475, Avg Cost (last 100): 1457.36
+Episode 2200/6000, Epsilon: 0.450, Avg Cost (last 100): 1287.63
+Episode 2300/6000, Epsilon: 0.425, Avg Cost (last 100): 1293.99
+Episode 2400/6000, Epsilon: 0.400, Avg Cost (last 100): 1238.54
+Episode 2500/6000, Epsilon: 0.375, Avg Cost (last 100): 1176.21
+Episode 2600/6000, Epsilon: 0.350, Avg Cost (last 100): 1140.70
+Episode 2700/6000, Epsilon: 0.325, Avg Cost (last 100): 1157.76
+Episode 2800/6000, Epsilon: 0.300, Avg Cost (last 100): 1066.85
+Episode 2900/6000, Epsilon: 0.275, Avg Cost (last 100): 1025.29
+Episode 3000/6000, Epsilon: 0.250, Avg Cost (last 100): 934.08
+Episode 3100/6000, Epsilon: 0.225, Avg Cost (last 100): 937.91
+Episode 3200/6000, Epsilon: 0.200, Avg Cost (last 100): 928.51
+Episode 3300/6000, Epsilon: 0.175, Avg Cost (last 100): 896.94
+Episode 3400/6000, Epsilon: 0.150, Avg Cost (last 100): 859.32
+Episode 3500/6000, Epsilon: 0.125, Avg Cost (last 100): 827.15
+Episode 3600/6000, Epsilon: 0.100, Avg Cost (last 100): 807.84
+Episode 3700/6000, Epsilon: 0.075, Avg Cost (last 100): 770.42
+Episode 3800/6000, Epsilon: 0.050, Avg Cost (last 100): 749.43
+Episode 3900/6000, Epsilon: 0.050, Avg Cost (last 100): 744.93
+Episode 4000/6000, Epsilon: 0.050, Avg Cost (last 100): 734.05
+Episode 4100/6000, Epsilon: 0.050, Avg Cost (last 100): 735.58
+Episode 4200/6000, Epsilon: 0.050, Avg Cost (last 100): 733.75
+Episode 4300/6000, Epsilon: 0.050, Avg Cost (last 100): 741.29
+Episode 4400/6000, Epsilon: 0.050, Avg Cost (last 100): 743.67
+Episode 4500/6000, Epsilon: 0.050, Avg Cost (last 100): 732.89
+Episode 4600/6000, Epsilon: 0.050, Avg Cost (last 100): 733.95
+Episode 4700/6000, Epsilon: 0.050, Avg Cost (last 100): 738.81
+Episode 4800/6000, Epsilon: 0.050, Avg Cost (last 100): 735.72
+Episode 4900/6000, Epsilon: 0.050, Avg Cost (last 100): 742.99
+Episode 5000/6000, Epsilon: 0.050, Avg Cost (last 100): 755.92
+Episode 5100/6000, Epsilon: 0.050, Avg Cost (last 100): 739.75
+Episode 5200/6000, Epsilon: 0.050, Avg Cost (last 100): 740.81
+Episode 5300/6000, Epsilon: 0.050, Avg Cost (last 100): 737.16
+Episode 5400/6000, Epsilon: 0.050, Avg Cost (last 100): 740.10
+Episode 5500/6000, Epsilon: 0.050, Avg Cost (last 100): 730.81
+Episode 5600/6000, Epsilon: 0.050, Avg Cost (last 100): 756.96
+Episode 5700/6000, Epsilon: 0.050, Avg Cost (last 100): 738.80
+Episode 5800/6000, Epsilon: 0.050, Avg Cost (last 100): 738.06
+Converged early by cost.
+Episode 5900/6000, Epsilon: 0.050, Avg Cost (last 100): 742.28
+Episode 6000/6000, Epsilon: 0.050, Avg Cost (last 100): 729.43
+
+Training finished.
+Saved episode costs plot to episode_costs_c1.png
+
+Extracting optimal path for C1...
+
+Route Two (Cost Minimization) Node Sequence (0-indexed):
+0 -> 10 -> 11 -> 21 -> 31 -> 41 -> 51 -> 52 -> 62 -> 72 -> 82 -> 92 -> 93 -> 94 -> 95 -> 96 -> 97 -> 98 -> 99        
+0 -> 10 -> 11 -> 21 -> 31 -> 41 -> 51 -> 52 -> 62 -> 72 -> 82 -> 92 -> 93 -> 94 -> 95 -> 96 -> 97 -> 98 -> 99        (1-indexed for reference.md format):
+
+Route Two Node Sequence (1-indexed for reference.md format):
+1 -> 11 -> 12 -> 22 -> 32 -> 42 -> 52 -> 53 -> 63 -> 73 -> 83 -> 93 -> 94 -> 95 -> 96 -> 97 -> 98 -> 99 -> 100
+
+Minimum Total Cost C1: 696.33
