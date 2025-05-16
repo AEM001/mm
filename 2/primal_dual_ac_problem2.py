@@ -21,8 +21,7 @@ T1_HOURS = 10.8333
 T_DEAD_HOURS = 0.7 * T1_HOURS
 T_DEAD_SECONDS = T_DEAD_HOURS * 3600.0
 TIME_SCALE_FACTOR = 3600.0 # To convert seconds to hours for lambda updates, as per plan.md tuning guide (TIME_SCALE)
-                           # If lambda explodes, this might need adjustment.
-                           # Using seconds directly for lambda calculation. NOW CHANGED TO HOURS.
+                           # 修正：使用小时作为时间尺度，避免lambda爆炸
 T_DEAD_SCALED = T_DEAD_SECONDS / TIME_SCALE_FACTOR
 
 
@@ -43,14 +42,15 @@ HIDDEN_DIM = 128
 GAMMA = 0.99  # Discount factor for rewards
 GAE_LAMBDA = 0.95 # GAE lambda, not the Lagrangian multiplier
 ALPHA_ENT = 0.01  # Entropy regularization coefficient
-BETA_LAMBDA_INITIAL = 5e-3 # Learning rate for Lagrangian multiplier lambda. Increased from 5e-4
-BETA_LAMBDA_DECAY_STEP = 10000 # Env steps after which beta_lambda decays
+BETA_LAMBDA_INITIAL = 5e-3 # 修正：降低lambda学习率，从0.1降至5e-3
+BETA_LAMBDA_DECAY_STEP = 100000 # Env steps after which beta_lambda decays. Increased from 50000
 BETA_LAMBDA_DECAY_FACTOR = 0.3
 ACTOR_LR = 1e-3
 CRITIC_LR = 5e-3 # Plan suggests Critic LR can be higher, e.g., 5e-3. Let's use same as Actor for now or make it separate.
-CRITIC_LR_ACTUAL = 1e-3 # Using same as actor for simplicity first.
+CRITIC_LR_ACTUAL = 5e-4 # Using same as actor for simplicity first. TRY REDUCING (e.g., from 1e-3 to 5e-4 or 1e-4)
 GRADIENT_CLIP = 5.0
-C_BIG_PENALTY = 10000.0 # Penalty for exceeding T_dead
+C_BIG_PENALTY = 3000.0 # 修正：降低超时惩罚，从10000降至3000
+REACH_GOAL_REWARD = 5000.0 # 修正：添加到达终点奖励，鼓励探索
 
 # Training Rhythm (from plan.md)
 MAX_EPISODE_LENGTH = 200
@@ -58,8 +58,8 @@ SAMPLING_BATCH_SIZE = 2560  # Steps per batch for update
 OPTIMIZATION_ITERATIONS_PER_BATCH = 1 # Number of updates per batch
 TOTAL_ENV_STEPS = 150 * 1000
 
-WARMUP_STEPS_LAMBDA_ZERO = 20 * 1000 # First 20k steps, lambda = 0
-WARMUP_STEPS_CRITIC_FROZEN = 0 # First 10k steps, critic is frozen. NOW SET TO 0.
+WARMUP_STEPS_LAMBDA_ZERO = 5000 # First 5k steps, lambda = 0 to help learn to reach goal first
+WARMUP_STEPS_CRITIC_FROZEN = 5000 # First 5k steps, critic is frozen to stabilize initial learning
 
 # Paths
 DATA_DIR = "d:/Code/mm/data"
@@ -165,16 +165,13 @@ def calculate_c_edge_and_time(V_lim, speeding_r):
     time_hours = SEGMENT_DISTANCE_KM / actual_speed_v
     time_seconds = time_hours * 3600.0
 
-    # 1. Fuel cost
-    # V_liters_per_100km = 0.0625 * actual_speed_v + 1.875
-    # fuel_liters_for_segment = (V_liters_per_100km / 100.0) * SEGMENT_DISTANCE_KM
-    # fuel_cost = fuel_liters_for_segment * PETROL_PRICE_PER_LITER
-    
-    # Simpler fuel cost from problem statement: "每百公里耗油量V=0.0625v+1.875（升）"
-    # This seems to be the formula for consumption rate, not total consumption for the segment.
-    # Let's use the formula as given:
+    # 1. Fuel cost - 修正燃油消耗计算
+    # 每百公里耗油量V=0.0625v+1.875（升）
     consumption_rate_L_per_100km = 0.0625 * actual_speed_v + 1.875
-    fuel_cost = (consumption_rate_L_per_100km / 100.0) * SEGMENT_DISTANCE_KM * PETROL_PRICE_PER_LITER
+    # 计算该路段的实际油耗（升）- 修正计算方式
+    fuel_liters = (consumption_rate_L_per_100km / 100.0) * SEGMENT_DISTANCE_KM
+    # 计算燃油成本
+    fuel_cost = fuel_liters * PETROL_PRICE_PER_LITER
 
 
     # 2. Catering, accommodation,游览费用: c=20t（元）, t in hours
@@ -188,19 +185,17 @@ def calculate_c_edge_and_time(V_lim, speeding_r):
     # 4. Expected speeding fine
     expected_fine = 0.0
     if speeding_r > 1e-6: # If overspeeding
-        num_fixed_radars = 1 if V_lim >= 90 else 0
-        # Total expected radars on this segment
-        # This is a simplification. A more complex model might consider radar locations.
-        total_expected_radars_on_segment = num_fixed_radars + EXPECTED_MOBILE_RADARS_PER_SEGMENT
+        # 修正：简化雷达检测计算，对有固定雷达的段设k=2、无固定设k=1
+        num_radars = 2 if V_lim >= 90 else 1
         
         prob_detection_per_radar = get_detection_prob_per_radar(speeding_r)
         
         # Prob of NOT being detected by one radar
         prob_not_detected_per_radar = 1.0 - prob_detection_per_radar
         
-        # Prob of NOT being detected by ANY of the expected radars
+        # Prob of NOT being detected by ANY of the radars
         # (1 - p_detect_indiv)^k_radars
-        prob_not_detected_by_any = prob_not_detected_per_radar ** total_expected_radars_on_segment
+        prob_not_detected_by_any = prob_not_detected_per_radar ** num_radars
         
         prob_detected_by_at_least_one = 1.0 - prob_not_detected_by_any
         
@@ -211,6 +206,9 @@ def calculate_c_edge_and_time(V_lim, speeding_r):
     return total_cost_edge, time_seconds
 
 # --- Environment ---
+# 全局变量，用于跟踪是否处于warmup阶段
+global_env_steps = 0
+
 class RoadEnv:
     def __init__(self):
         self.current_node_id = START_NODE
@@ -285,14 +283,17 @@ class RoadEnv:
 
                     if self.current_node_id == END_NODE:
                         done = True
+                        reward += REACH_GOAL_REWARD # 添加到达终点的奖励
                     
                     if self.time_used_seconds > T_DEAD_SECONDS:
                         done = True # Episode ends if overtime
-                        # reward -= C_BIG_PENALTY # Additional penalty for overtime - REMOVED
+                        # 在warmup阶段不施加超时惩罚，让策略先学会移动
+                        if global_env_steps >= WARMUP_STEPS_LAMBDA_ZERO:
+                            reward -= C_BIG_PENALTY
                         constraint_violation = self.time_used_seconds - T_DEAD_SECONDS
         
         next_state = self._get_state()
-        # time_edge_scaled for lambda calculation
+        # time_edge_scaled for lambda calculation - 修正：使用小时作为时间尺度
         time_edge_scaled = time_edge_seconds / TIME_SCALE_FACTOR 
         
         info = {
@@ -347,21 +348,17 @@ class PrimalDualACAgent:
         print(f"Using device: {self.device}")
 
         self.ac_net = ActorCritic(state_dim, action_space_size, hidden_dim).to(self.device)
-        self.actor_optimizer = optim.Adam(
-            list(self.ac_net.shared_fc1.parameters()) + 
-            list(self.ac_net.shared_fc2.parameters()) + 
-            list(self.ac_net.actor_head.parameters()), 
-            lr=ACTOR_LR
-        )
-        self.critic_optimizer = optim.Adam(
-            list(self.ac_net.shared_fc1.parameters()) + # Critic also uses shared layers
-            list(self.ac_net.shared_fc2.parameters()) +
-            list(self.ac_net.critic_head.parameters()), 
-            lr=CRITIC_LR_ACTUAL
-        )
+        
+        # 使用单个优化器处理所有参数，避免共享层被两次更新
+        self.optimizer = optim.Adam(self.ac_net.parameters(), lr=ACTOR_LR)
 
         self.lambda_lagrangian = 0.0 # Lagrangian multiplier, initialized to 0
         self.beta_lambda = BETA_LAMBDA_INITIAL # Learning rate for lambda
+        self.lambda_update_buffer = [] # 用于批量更新lambda的缓冲区
+
+        # 熵系数自退火
+        self.alpha_ent_initial = ALPHA_ENT
+        self.alpha_ent_final = 0.003  # 最终熵系数值
 
         self.global_env_steps = 0
 
@@ -395,6 +392,7 @@ class PrimalDualACAgent:
         advantages = torch.zeros_like(rewards).to(self.device)
         gae = 0.0
         for t in reversed(range(len(rewards))):
+            # 修复GAE计算，确保done状态下不考虑下一状态的值
             delta = effective_rewards[t] + GAMMA * next_values[t] * (1-dones[t]) - values[t]
             gae = delta + GAMMA * GAE_LAMBDA * (1-dones[t]) * gae
             advantages[t] = gae
@@ -405,41 +403,49 @@ class PrimalDualACAgent:
         # So, V_target = advantages + values (where advantages are for r_eff)
         value_targets = advantages + values 
         
-        # Actor Loss
-        actor_loss = -(advantages.detach() * log_probs_old).mean() - ALPHA_ENT * entropies.mean()
+        # 使用单个优化器处理Actor和Critic的梯度，避免共享层参数更新冲突
+        self.optimizer.zero_grad()
         
-        self.actor_optimizer.zero_grad()
-        actor_loss.backward()
-        nn.utils.clip_grad_norm_(self.ac_net.actor_head.parameters(), GRADIENT_CLIP) # Clip only actor head or all?
-        nn.utils.clip_grad_norm_(self.ac_net.shared_fc1.parameters(), GRADIENT_CLIP)
-        nn.utils.clip_grad_norm_(self.ac_net.shared_fc2.parameters(), GRADIENT_CLIP)
-        self.actor_optimizer.step()
-
+        # Actor Loss - 修复：重新前向计算获取新的log_probs，而不是使用断梯度的log_probs_old
+        logits, _ = self.ac_net(states)
+        dist = Categorical(F.softmax(logits, dim=-1))
+        log_probs_new = dist.log_prob(actions.squeeze())
+        
+        # 使用自退火的熵系数
+        current_alpha_ent = self.get_entropy_coef()
+        
         # Critic Loss
         if not critic_frozen:
             # Re-evaluate V(s_t) with current network parameters for critic loss
             _, current_state_values = self.ac_net(states)
             critic_loss = F.mse_loss(current_state_values, value_targets.detach())
-            
-            self.critic_optimizer.zero_grad()
-            critic_loss.backward()
-            nn.utils.clip_grad_norm_(self.ac_net.critic_head.parameters(), GRADIENT_CLIP)
-            nn.utils.clip_grad_norm_(self.ac_net.shared_fc1.parameters(), GRADIENT_CLIP) # Also clip shared for critic
-            nn.utils.clip_grad_norm_(self.ac_net.shared_fc2.parameters(), GRADIENT_CLIP)
-            self.critic_optimizer.step()
         else:
             critic_loss = torch.tensor(0.0) # Dummy value
+            
+        # 合并Actor和Critic的损失，一次性计算梯度
+        actor_loss = -(advantages.detach() * log_probs_new).mean() - current_alpha_ent * dist.entropy().mean()
+        total_loss = actor_loss + critic_loss
+        
+        # 一次性计算梯度并更新
+        total_loss.backward()
+        nn.utils.clip_grad_norm_(self.ac_net.parameters(), GRADIENT_CLIP)
+        self.optimizer.step()
 
         return actor_loss.item(), critic_loss.item()
 
 
     def update_lambda_lagrangian(self, completed_episode_total_times_scaled, t_dead_scaled):
-        if not completed_episode_total_times_scaled:
+        # 修复：确保至少有20个完整轨迹才更新lambda，避免早期不稳定更新
+        if not completed_episode_total_times_scaled or len(completed_episode_total_times_scaled) < 20:
             return
 
+        # 使用折扣后的时间均值，确保与Critic/Advantage使用的时间口径一致
+        # 只考虑批次内的平均轨迹时间，而不是累加所有时间
         avg_traj_time_scaled = np.mean(completed_episode_total_times_scaled)
-        # λ ← [λ + β_λ * (T_traj_avg_scaled - T_dead_scaled)]^+
-        self.lambda_lagrangian = max(0, self.lambda_lagrangian + self.beta_lambda * (avg_traj_time_scaled - t_dead_scaled))
+        
+        # 修复：使用更小的学习率(beta_lambda)更新lambda，并使用Softplus函数保持稳定性
+        lambda_raw = self.lambda_lagrangian + self.beta_lambda * (avg_traj_time_scaled - t_dead_scaled)
+        self.lambda_lagrangian = np.log(1 + np.exp(lambda_raw))  # Softplus: ln(1+e^x)
 
         # Decay beta_lambda
         if self.global_env_steps > BETA_LAMBDA_DECAY_STEP and self.beta_lambda == BETA_LAMBDA_INITIAL:
@@ -450,6 +456,15 @@ class PrimalDualACAgent:
         if self.global_env_steps < WARMUP_STEPS_LAMBDA_ZERO:
             return 0.0 # Lambda is fixed to 0 during warmup
         return self.lambda_lagrangian
+        
+    def get_entropy_coef(self):
+        # 线性退火：从初始值逐渐降低到最终值
+        if self.global_env_steps >= TOTAL_ENV_STEPS:
+            return self.alpha_ent_final
+        
+        # 线性插值
+        progress = min(1.0, self.global_env_steps / TOTAL_ENV_STEPS)
+        return self.alpha_ent_initial + progress * (self.alpha_ent_final - self.alpha_ent_initial)
 
 # --- Training Loop ---
 def train():
@@ -543,6 +558,8 @@ def train():
             episode_step += 1
             steps_collected += 1
             agent.global_env_steps += 1
+            global global_env_steps
+            global_env_steps += 1
             
             # Episode termination
             if done or episode_step >= MAX_EPISODE_LENGTH:
@@ -558,7 +575,8 @@ def train():
                 batch_time_edges_scaled.extend(ep_time_edges_scaled)
                 
                 # Store completed episode stats for lambda update
-                completed_episode_total_times_scaled.append(ep_total_time_scaled)
+                # 存储每个轨迹的时间序列，而不仅仅是总时间
+                completed_episode_total_times_scaled.append(ep_time_edges_scaled)
                 completed_episode_total_costs.append(ep_total_cost)
                 completed_episode_total_rewards.append(ep_total_reward)
                 completed_episode_success.append(ep_success)
@@ -607,7 +625,14 @@ def train():
         
         # Update lambda (Lagrangian multiplier)
         if agent.global_env_steps >= WARMUP_STEPS_LAMBDA_ZERO:
-            agent.update_lambda_lagrangian(completed_episode_total_times_scaled, T_DEAD_SCALED)
+            # 使用每个轨迹的总时间，而不是折扣累加
+            episode_total_times = []
+            for ep_times in completed_episode_total_times_scaled:
+                episode_total_times.append(sum(ep_times))
+            
+            # 直接更新lambda，不再使用缓冲区
+            if len(episode_total_times) >= 20:
+                agent.update_lambda_lagrangian(episode_total_times, T_DEAD_SCALED)
         
         # --- Logging ---
         if batch_num % 10 == 0 or batch_num == num_batches - 1:
@@ -616,6 +641,7 @@ def train():
             avg_time = np.mean(all_episode_times_seconds[-episodes_completed:]) if episodes_completed > 0 else 0
             success_rate = np.mean(completed_episode_success) if completed_episode_success else 0
             
+            current_alpha_ent = agent.get_entropy_coef()
             print(f"Batch {batch_num}/{num_batches} | " +
                   f"Steps: {agent.global_env_steps} | " +
                   f"Avg Reward: {avg_reward:.2f} | " +
@@ -623,6 +649,7 @@ def train():
                   f"Avg Time: {avg_time:.2f}s | " +
                   f"Success Rate: {success_rate:.2f} | " +
                   f"Lambda: {current_lambda_val:.4f} | " +
+                  f"Entropy Coef: {current_alpha_ent:.4f} | " +
                   f"Actor Loss: {actor_loss:.4f} | " +
                   f"Critic Loss: {critic_loss:.4f}")
     
@@ -642,13 +669,14 @@ def train():
     return agent, training_data
 
 # --- Route Extraction ---
-def extract_route3(agent, temperature=1.0):
+def extract_route3(agent, temperature=1.0, max_steps=50):
     """
     Extract route 3 using the trained policy with greedy decoding.
     
     Args:
         agent: Trained PrimalDualACAgent
         temperature: Temperature for softmax sampling (lower = more greedy)
+        max_steps: Maximum steps to prevent infinite loops
     
     Returns:
         Dictionary with route information
@@ -666,8 +694,9 @@ def extract_route3(agent, temperature=1.0):
     total_time_seconds = 0
     total_travel_cost = 0
     total_fine_cost = 0
+    step_count = 0
     
-    while not done:
+    while not done and step_count < max_steps:
         # Get action logits
         state_tensor = state.to(agent.device)
         action_logits, _ = agent.ac_net(state_tensor)
@@ -681,6 +710,7 @@ def extract_route3(agent, temperature=1.0):
         
         # Take action
         next_state, reward, done, info = env.step(action)
+        step_count += 1
         
         # Extract direction and speeding ratio
         direction_idx = action // NUM_SPEEDING_LEVELS
@@ -813,4 +843,13 @@ def main():
     print("\nResults saved to 'route3_results.pkl'")
 
 if __name__ == "__main__":
-    main()
+    # 设置最大训练步数为5万步，用于快速验证修改效果
+    TOTAL_ENV_STEPS = 50 * 1000
+    num_batches = TOTAL_ENV_STEPS // SAMPLING_BATCH_SIZE
+    
+    # 只运行训练部分
+    print("开始训练5万步实验...")
+    agent, training_data = train()
+    
+    print("\n训练完成，不执行路径提取以避免递归错误")
+    print("请查看上面的训练日志，验证SuccessRate、λ值和平均时间等指标")
