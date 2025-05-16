@@ -20,9 +20,9 @@ SEGMENT_DISTANCE_KM = 50.0
 T1_HOURS = 10.8333
 T_DEAD_HOURS = 0.7 * T1_HOURS
 T_DEAD_SECONDS = T_DEAD_HOURS * 3600.0
-TIME_SCALE_FACTOR = 3600.0 # To convert seconds to hours for lambda updates, as per plan.md tuning guide (TIME_SCALE)
+TIME_SCALE_FACTOR = 1.0 # To convert seconds to hours for lambda updates, as per plan.md tuning guide (TIME_SCALE)
                            # If lambda explodes, this might need adjustment.
-                           # Using hours for lambda calculation might stabilize it.
+                           # Using seconds directly for lambda calculation.
 T_DEAD_SCALED = T_DEAD_SECONDS / TIME_SCALE_FACTOR
 
 
