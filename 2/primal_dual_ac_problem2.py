@@ -48,7 +48,7 @@ BETA_LAMBDA_DECAY_STEP = 10000 # Env steps after which beta_lambda decays
 BETA_LAMBDA_DECAY_FACTOR = 0.3
 ACTOR_LR = 1e-3
 CRITIC_LR = 5e-3 # Plan suggests Critic LR can be higher, e.g., 5e-3. Let's use same as Actor for now or make it separate.
-CRITIC_LR_ACTUAL = 5e-3 # Using same as actor for simplicity first.
+CRITIC_LR_ACTUAL = 1e-3 # Using same as actor for simplicity first.
 GRADIENT_CLIP = 5.0
 C_BIG_PENALTY = 10000.0 # Penalty for exceeding T_dead
 
