@@ -20,9 +20,9 @@ SEGMENT_DISTANCE_KM = 50.0
 T1_HOURS = 10.8333
 T_DEAD_HOURS = 0.7 * T1_HOURS
 T_DEAD_SECONDS = T_DEAD_HOURS * 3600.0
-TIME_SCALE_FACTOR = 1.0 # To convert seconds to hours for lambda updates, as per plan.md tuning guide (TIME_SCALE)
+TIME_SCALE_FACTOR = 3600.0 # To convert seconds to hours for lambda updates, as per plan.md tuning guide (TIME_SCALE)
                            # If lambda explodes, this might need adjustment.
-                           # Using seconds directly for lambda calculation.
+                           # Using seconds directly for lambda calculation. NOW CHANGED TO HOURS.
 T_DEAD_SCALED = T_DEAD_SECONDS / TIME_SCALE_FACTOR
 
 
@@ -43,12 +43,12 @@ HIDDEN_DIM = 128
 GAMMA = 0.99  # Discount factor for rewards
 GAE_LAMBDA = 0.95 # GAE lambda, not the Lagrangian multiplier
 ALPHA_ENT = 0.01  # Entropy regularization coefficient
-BETA_LAMBDA_INITIAL = 5e-4 # Learning rate for Lagrangian multiplier lambda
+BETA_LAMBDA_INITIAL = 5e-3 # Learning rate for Lagrangian multiplier lambda. Increased from 5e-4
 BETA_LAMBDA_DECAY_STEP = 10000 # Env steps after which beta_lambda decays
 BETA_LAMBDA_DECAY_FACTOR = 0.3
 ACTOR_LR = 1e-3
 CRITIC_LR = 5e-3 # Plan suggests Critic LR can be higher, e.g., 5e-3. Let's use same as Actor for now or make it separate.
-CRITIC_LR_ACTUAL = 1e-3 # Using same as actor for simplicity first.
+CRITIC_LR_ACTUAL = 5e-3 # Using same as actor for simplicity first.
 GRADIENT_CLIP = 5.0
 C_BIG_PENALTY = 10000.0 # Penalty for exceeding T_dead
 
@@ -59,7 +59,7 @@ OPTIMIZATION_ITERATIONS_PER_BATCH = 1 # Number of updates per batch
 TOTAL_ENV_STEPS = 150 * 1000
 
 WARMUP_STEPS_LAMBDA_ZERO = 20 * 1000 # First 20k steps, lambda = 0
-WARMUP_STEPS_CRITIC_FROZEN = 10 * 1000 # First 10k steps, critic is frozen
+WARMUP_STEPS_CRITIC_FROZEN = 0 # First 10k steps, critic is frozen. NOW SET TO 0.
 
 # Paths
 DATA_DIR = "d:/Code/mm/data"
@@ -288,7 +288,7 @@ class RoadEnv:
                     
                     if self.time_used_seconds > T_DEAD_SECONDS:
                         done = True # Episode ends if overtime
-                        reward -= C_BIG_PENALTY # Additional penalty for overtime
+                        # reward -= C_BIG_PENALTY # Additional penalty for overtime - REMOVED
                         constraint_violation = self.time_used_seconds - T_DEAD_SECONDS
         
         next_state = self._get_state()
