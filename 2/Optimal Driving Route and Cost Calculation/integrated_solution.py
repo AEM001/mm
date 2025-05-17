@@ -107,73 +107,7 @@ def index_to_number(idx):
     """将节点索引（0-99）转换为原图编号（1-100）"""
     return idx + 1
 
-# === 三）罚款函数与检测概率 ===
 
-# 注意：以下 calculate_fine 和 detection_probability 函数
-# 在采用C++版本的期望罚款逻辑后，不再被主路径直接调用。
-# 保留它们可能用于其他分析或理解原始罚款结构，但对于问题二的解算，
-# 新的 expected_fine 函数将直接返回期望罚款值。
-#
-# def calculate_fine(speed_limit, over_pct):
-#     """计算超速罚款金额"""
-#     if over_pct <= 0:
-#         return 0
-#     
-#     # 将小数形式的百分比转换为整数百分比
-#     over_pct_int = over_pct * 100
-#     
-#     # 根据限速和超速百分比确定罚款金额
-#     if speed_limit < 50:
-#         # 低于50 km/h
-#         if over_pct_int <= 20:
-#             return 50
-#         elif over_pct_int <= 50:
-#             return 100
-#         elif over_pct_int <= 70:
-#             return 300
-#         else:
-#             return 500
-#     elif speed_limit <= 80:
-#         # 50-80 km/h
-#         if over_pct_int <= 20:
-#             return 100
-#         elif over_pct_int <= 50:
-#             return 150
-#         elif over_pct_int <= 70:
-#             return 500
-#         else:
-#             return 1000
-#     elif speed_limit <= 100:
-#         # 80-100 km/h
-#         if over_pct_int <= 20:
-#             return 150
-#         elif over_pct_int <= 50:
-#             return 200
-#         elif over_pct_int <= 70:
-#             return 1000
-#         else:
-#             return 1500
-#     else:
-#         # 高于100 km/h
-#         if over_pct_int <= 50:
-#             return 200
-#         elif over_pct_int <= 70:
-#             return 1500
-#         else:
-#             return 2000
-
-# def detection_probability(over_pct):
-#     """计算超速被任意一个雷达探测到的概率"""
-#     if over_pct <= 0:
-#         return 0.0
-#     elif over_pct <= 0.2:
-#         return 0.7
-#     elif over_pct <= 0.5:
-#         return 0.9
-#     elif over_pct <= 0.7:
-#         return 0.99
-#     else:
-#         return 1.0  # 超过70%按100%概率处理
 
 def expected_fine(speed_limit, over_pct):
     """
@@ -181,21 +115,9 @@ def expected_fine(speed_limit, over_pct):
     speed_limit: 路段限速 (km/h)
     over_pct: 超速百分比 (例如 0.2 表示超速20%)
     """
-    if over_pct < 0.01: # C++ 中是 r < 0.1，但实际超速选项从0.2开始，0.0表示不超速
-        # 对于 over_pct = 0.0 (不超速), 罚款为0
-        # C++的 r_options 是 0.0, 0.2, 0.5, 0.7. r=0.0 会触发 r < 0.1.
-        # 为了匹配，如果 over_pct 严格为0，也应返回0。
-        # 考虑到浮点数精度，使用一个小的阈值。
-        # 或者直接判断 over_pct <= 0
+    if over_pct < 0.01: 
         if over_pct <= 0:
             return 0.0
-        # If over_pct is very small but positive (e.g. 0.001), C++ would proceed.
-        # However, our discrete speed_options are 0.0, 0.2, 0.5, 0.7.
-        # So, if over_pct is not one of these, it's an issue with how it's called.
-        # For practical purposes with given speed_options, over_pct <= 0 is fine.
-
-    # C++ s 对应这里的 speed_limit
-    # C++ r 对应这里的 over_pct
 
     if speed_limit <= 40: # C++: s <= 41. Actual speed limits are 40, 60, 90, 120.
         if over_pct <= 0.2: # C++: r <= 0.21
