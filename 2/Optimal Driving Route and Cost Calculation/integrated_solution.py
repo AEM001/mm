@@ -2,6 +2,10 @@ import numpy as np
 import heapq
 import matplotlib.pyplot as plt
 
+# 设置Matplotlib支持中文显示
+plt.rcParams['font.sans-serif'] = ['SimHei']  # 指定默认字体为黑体
+plt.rcParams['axes.unicode_minus'] = False  # 解决保存图像是负号'-'显示为方块的问题
+
 # === 一）参数与数据读取 ===
 L = 50.0                 # 每段距离（km）
 fuel_price = 7.76        # 油价（元/升）
@@ -426,7 +430,8 @@ def visualize_path(path, speed_plan, title):
     sm.set_array([])
     cbar = plt.colorbar(sm, ax=ax)
     cbar.set_label('超速比例 (%)')
-    cbar.set_ticks([0, 20/70, 50/70, 1])
+    # 将刻度设置在颜色条的实际数据范围 [0, 70] 内
+    cbar.set_ticks([0, 20, 50, 70])
     cbar.set_ticklabels(['0%', '20%', '50%', '70%'])
     
     plt.title(title)
@@ -434,7 +439,7 @@ def visualize_path(path, speed_plan, title):
     plt.ylabel('行（从下到上）')
     plt.grid(True)
     plt.legend()
-    plt.gca().invert_yaxis()  # 反转y轴，使得原点在左下角
+    # plt.gca().invert_yaxis()  # 注释掉或删除此行以确保Y轴0点在底部
     plt.savefig(f"{title.replace(' ', '_')}.png")
     plt.close()
 
