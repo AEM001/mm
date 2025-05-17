@@ -1,318 +1,235 @@
 import pandas as pd
 import numpy as np
-import networkx as nx
-import pulp as pl
-from tabulate import tabulate
+import heapq # 新增导入
+import os    # 新增导入
 
-# 读取限速矩阵
-def load_speed_limits():
-    row_limits = pd.read_csv('limits_row.csv', header=None).values  # 横向限速 (10×9)
-    col_limits = pd.read_csv('limits_col.csv', header=None).values  # 纵向限速 (9×10)
-    return row_limits, col_limits
+# 1. 读取限速数据
+# 使用 os.path 确保路径的正确性
+script_dir = os.path.dirname(os.path.abspath(__file__))
+limits_col_path = os.path.join(script_dir, '..', 'data', 'limits_col.csv')
+limits_row_path = os.path.join(script_dir, '..', 'data', 'limits_row.csv')
 
-# 构建有向图
-def build_graph(row_limits, col_limits):
-    G = nx.DiGraph()
-    d = 50  # 每段路长 50 km
-    for r in range(10):
-        for c in range(10):
-            idx = r*10 + c
-            # 向右
-            if c < 9:
-                v = row_limits[r, c]
-                toll = 50 * 0.5 if v == 120 else 0  # 高速公路 0.5元/km ⇒ 25元/段
-                G.add_edge(idx, idx+1, d=d, v_lim=v, toll=toll)
-                G.add_edge(idx+1, idx, d=d, v_lim=v, toll=toll)
-            # 向上
-            if r < 9:
-                v = col_limits[r, c]
-                toll = 50 * 0.5 if v == 120 else 0
-                G.add_edge(idx, idx+10, d=d, v_lim=v, toll=toll)
-                G.add_edge(idx+10, idx, d=d, v_lim=v, toll=toll)
-    return G
+limits_col_df = pd.read_csv(limits_col_path, header=None)
+limits_row_df = pd.read_csv(limits_row_path, header=None)
 
-# 提取路线一的路段和限速
-def extract_route_one(G):
-    # 路线一的节点序列 (0-indexed)
-    route_one_nodes = [0, 1, 11, 12, 13, 23, 24, 34, 44, 54, 55, 56, 57, 58, 68, 78, 88, 89, 99]
-    
-    # 提取路段和限速
-    route_one_segments = []
-    for i in range(len(route_one_nodes) - 1):
-        from_node = route_one_nodes[i]
-        to_node = route_one_nodes[i+1]
-        edge_data = G.get_edge_data(from_node, to_node)
-        
-        segment = {
-            'edge_id': i,
-            'from_node': from_node,
-            'to_node': to_node,
-            'v_lim': edge_data['v_lim'],
-            'd': edge_data['d'],
-            'toll': edge_data['toll']
-        }
-        route_one_segments.append(segment)
-    
-    return route_one_segments
+# 2. 构建图G，仅关注路线一上的节点和边属性
+# Route One 节点索引 (1-indexed): [1,2,12,13,...,100]
+route_nodes = [1,2,12,13,14,24,25,35,45,55,56,57,58,59,69,79,89,90,100]
+# 计算边的限速 L_list，与是否收费
+edges_route_one = []  # 列表元素: dict{name,u,v,limit,toll_per_km}
+for i in range(len(route_nodes)-1):
+    u = route_nodes[i]
+    v = route_nodes[i+1]
+    if v == u + 1: # 横向
+        r_0idx = (u-1)//10
+        c_0idx = (u-1)%10
+        L = limits_row_df.iloc[r_0idx, c_0idx]
+    else: # 纵向 v == u + 10
+        r_0idx = (u-1)//10
+        c_0idx = (u-1)%10
+        L = limits_col_df.iloc[r_0idx, c_0idx] # Corrected indexing based on how nodes map to CSV
+    toll = 0.5 if L == 120 else 0.0
+    edges_route_one.append({'u':u, 'v':v, 'L':L, 'toll':toll})
 
-# 计算罚款
-def calculate_fine(speed_limit, over_pct):
-    # 添加一个小的epsilon值避免浮点误差
-    epsilon = 1e-6
-    
+d_segment = 50.0  # km per edge
+alpha_options = [0.0, 0.2, 0.5, 0.7]
+prob_catch_single_radar = {0.0:0.0, 0.2:0.7, 0.5:0.9, 0.7:0.99} # Probability of being caught by ONE radar
+
+TOTAL_SEGMENTS_IN_GRID = 180 # 10*9 horizontal + 9*10 vertical (actually 10*9 vert for 9x10 file)
+# Total segments: 10 rows * 9 horiz/row + 10 cols * 9 vert/col = 90 + 90 = 180 unique directed segments if we consider one way.
+# Or, number of physical road pieces = 10*9 + 9*10 = 180.
+RHO_MOBILE_RADAR = 20.0 / TOTAL_SEGMENTS_IN_GRID
+
+
+# 3. 罚款函数
+def calc_fine(L, alpha):
+    over_pct = alpha * 100
     if over_pct <= 0:
         return 0
-    elif speed_limit < 50:
-        if over_pct <= 20 + epsilon:
-            return 50
-        elif over_pct <= 50 + epsilon:
-            return 100
-        elif over_pct <= 70 + epsilon:
-            return 300
-        else:
-            return 500
-    elif speed_limit <= 80:
-        if over_pct <= 20 + epsilon:
-            return 100
-        elif over_pct <= 50 + epsilon:
-            return 150
-        elif over_pct <= 70 + epsilon:
-            return 500
-        else:
-            return 1000
-    elif speed_limit <= 100:
-        if over_pct <= 20 + epsilon:
-            return 150
-        elif over_pct <= 50 + epsilon:
-            return 200
-        elif over_pct <= 70 + epsilon:
-            return 1000
-        else:
-            return 1500
-    else:  # speed_limit > 100
-        if over_pct <= 50 + epsilon:
-            return 200
-        elif over_pct <= 70 + epsilon:
-            return 1500
-        else:
-            return 2000
-
-# 计算探测概率 - 直接使用题目给定的整段概率
-def detection_probability(over_pct):
-    # 添加一个小的epsilon值避免浮点误差
-    epsilon = 1e-6
-    
-    if over_pct <= 0:
-        return 0
-    elif over_pct <= 20 + epsilon:
-        return 0.70
-    elif over_pct <= 50 + epsilon:
-        return 0.90
-    elif over_pct <= 70 + epsilon:
-        return 0.99
+    if L < 50:
+        if over_pct <= 20: return 50
+        if over_pct <= 50: return 100
+        if over_pct <= 70: return 300
+        return 500
+    elif L <= 80:
+        if over_pct <= 20: return 100
+        if over_pct <= 50: return 150
+        if over_pct <= 70: return 500
+        return 1000
+    elif L <= 100:
+        if over_pct <= 20: return 150
+        if over_pct <= 50: return 200
+        if over_pct <= 70: return 1000
+        return 1500
     else:
-        return 1.0  # 超过70%一定会被探测到
+        if over_pct <= 50: return 200
+        if over_pct <= 70: return 1500
+        return 2000
 
-# 计算期望罚款 - 修正为直接使用整段概率
-def expected_penalty(speed_limit, over_pct):
-    fine = calculate_fine(speed_limit, over_pct)
-    prob = detection_probability(over_pct)
-    return fine * prob
-
-# 计算油费
-def calculate_fuel_cost(distance, speed, over_pct):
-    actual_speed = speed * (1 + over_pct/100)
-    fuel_consumption = (0.0625 * actual_speed + 1.875) * (distance / 100)  # 每百公里耗油量
-    return fuel_consumption * 7.76  # 汽油单价7.76元/升
-
-# 计算行驶时间
-def calculate_travel_time(distance, speed, over_pct):
-    actual_speed = speed * (1 + over_pct/100)
-    return distance / actual_speed  # 小时
-
-# 计算餐饮住宿费
-def calculate_meal_cost(travel_time):
-    return 20 * travel_time  # 20元/小时
-
-# 计算总费用
-def calculate_total_cost(segment, over_pct):
-    v_lim = segment['v_lim']
-    distance = segment['d']
-    toll = segment['toll']
-    
-    travel_time = calculate_travel_time(distance, v_lim, over_pct)
-    meal_cost = calculate_meal_cost(travel_time)
-    fuel_cost = calculate_fuel_cost(distance, v_lim, over_pct)
-    penalty = expected_penalty(v_lim, over_pct)
-    
-    return {
-        'travel_time': travel_time,
-        'meal_cost': meal_cost,
-        'fuel_cost': fuel_cost,
-        'toll': toll,
-        'penalty': penalty,
-        'total_cost': meal_cost + fuel_cost + toll + penalty
-    }
-
-# 设计超速方案 - 添加费用约束
-def design_speeding_scheme(route_segments):
-    # 定义可能的超速率（百分比）- 上限设为69%而非70%
-    speeding_rates = [0, 5, 10, 15, 19, 35, 49, 60, 69]
-    
-    # 计算基准路线费用（不超速情况）
-    base_cost = sum(calculate_total_cost(segment, 0)['total_cost'] for segment in route_segments)
-    print(f"基准路线费用（不超速）: {base_cost:.4f} 元")
-    
-    # 创建优化模型
-    model = pl.LpProblem("Route_Optimization", pl.LpMinimize)
-    
-    # 为每个路段的每个可能超速率创建二元变量
-    x = {}
-    for i, segment in enumerate(route_segments):
-        for k, rate in enumerate(speeding_rates):
-            x[i, k] = pl.LpVariable(f"x_{i}_{k}", cat=pl.LpBinary)
-    
-    # 每个路段只能选择一个超速率
-    for i in range(len(route_segments)):
-        model += pl.lpSum(x[i, k] for k in range(len(speeding_rates))) == 1
-    
-    # 预计算每个路段在每个超速率下的时间和费用
-    time_table = {}
-    cost_table = {}
-    for i, segment in enumerate(route_segments):
-        for k, rate in enumerate(speeding_rates):
-            result = calculate_total_cost(segment, rate)
-            time_table[i, k] = result['travel_time']
-            cost_table[i, k] = result['total_cost']
-    
-    # 添加总费用约束 - 确保不超过基准路线费用
-    total_cost_expr = pl.lpSum(cost_table[i, k] * x[i, k] for i in range(len(route_segments)) 
-                              for k in range(len(speeding_rates)))
-    model += total_cost_expr <= base_cost + 1e-6  # 添加一个小的epsilon值避免浮点误差
-    
-    # 目标函数：最小化总行驶时间
-    model += pl.lpSum(time_table[i, k] * x[i, k] for i in range(len(route_segments)) 
-                     for k in range(len(speeding_rates)))
-    
-    # 求解模型
-    model.solve(pl.PULP_CBC_CMD(msg=False))
-    
-    # 提取结果
-    results = []
-    total_time = 0
-    total_cost = 0
-    
-    for i, segment in enumerate(route_segments):
-        selected_k = None
-        for k in range(len(speeding_rates)):
-            if pl.value(x[i, k]) == 1:
-                selected_k = k
-                break
+# 4. 计算不超速时的总时间T0和总费用C0
+def compute_base_cost_time(route_edges_list, segment_distance):
+    T_base = 0.0
+    C_base = 0.0
+    # 餐饮住宿游览费 c=20t（元）
+    # 汽车速度为v (公里/小时)时，每百公里耗油量V=0.0625v+1.875（升）
+    # 汽油单价均为7.76元/升
+    # 高速公路 L=120, 每公里收费0.5元
+    for e in route_edges_list:
+        L = float(e['L'])
+        if L == 0: continue # Should not happen for a valid path
         
-        selected_rate = speeding_rates[selected_k]
-        result = calculate_total_cost(segment, selected_rate)
+        v = L
+        t = segment_distance / v
+        T_base += t
         
-        total_time += result['travel_time']
-        total_cost += result['total_cost']
+        # 餐饮住宿游览费
+        C_base += 20 * t
         
-        results.append({
-            'edge_id': i,
-            'from_node': segment['from_node'],
-            'to_node': segment['to_node'],
-            'v_lim': segment['v_lim'],
-            'speeding_rate': selected_rate,
-            'travel_time': result['travel_time'],
-            'meal_cost': result['meal_cost'],
-            'fuel_cost': result['fuel_cost'],
-            'toll': result['toll'],
-            'penalty': result['penalty'],
-            'total_cost': result['total_cost']
-        })
-    
-    return results, total_time, total_cost, base_cost
-
-# 主函数
-def main():
-    # 加载限速数据
-    row_limits, col_limits = load_speed_limits()
-    
-    # 构建图
-    G = build_graph(row_limits, col_limits)
-    
-    # 提取路线一的路段
-    route_one_segments = extract_route_one(G)
-    
-    # 设计超速方案
-    results, total_time, total_cost, base_cost = design_speeding_scheme(route_one_segments)
-    
-    # 输出结果
-    print(f"最短时间: {total_time:.4f} 小时")
-    print(f"总费用: {total_cost:.4f} 元")
-    print(f"时间减少: {(base_time - total_time):.4f} 小时 ({(base_time - total_time) / base_time * 100:.2f}%)")
-    
-    # 创建表格
-    table_data = []
-    for result in results:
-        table_data.append([
-            result['edge_id'],
-            f"{result['from_node']}→{result['to_node']}",
-            result['v_lim'],
-            f"{result['speeding_rate']:.2f}",
-            f"{result['travel_time']:.4f}",
-            f"{result['total_cost']:.4f}"
-        ])
-    
-    headers = ["Edge ID", "from→to", "v_lim", "s (超速率%)", "τ_e (h)", "ΔC_e (¥)"]
-    print(tabulate(table_data, headers=headers, tablefmt="pipe"))
-    
-    # 保存结果到文件
-    with open('results_corrected.md', 'w') as f:
-        f.write("# 行车规划问题：超速方案优化结果（修正版）\n\n")
-        f.write(f"## 基准路线费用（不超速）: {base_cost:.4f} 元\n")
-        f.write(f"## 最短时间: {total_time:.4f} 小时\n")
-        f.write(f"## 总费用: {total_cost:.4f} 元\n")
-        f.write(f"## 时间减少: {(base_time - total_time):.4f} 小时 ({(base_time - total_time) / base_time * 100:.2f}%)\n\n")
-        f.write("## 每个路段的超速方案\n\n")
-        f.write(tabulate(table_data, headers=headers, tablefmt="pipe"))
-        f.write("\n\n")
-        f.write("| **汇总** |  |  |  | " + f"**T* = {total_time:.4f} h** | **C* = {total_cost:.4f} ¥** |")
+        # 燃油费
+        V_fuel = 0.0625 * v + 1.875
+        C_base += V_fuel * (segment_distance / 100.0) * 7.76
         
-        # 添加详细的费用明细
-        f.write("\n\n## 详细费用明细\n\n")
-        detail_headers = ["Edge ID", "from→to", "v_lim", "s (%)", "时间(h)", "餐饮费(¥)", "油费(¥)", "通行费(¥)", "罚款(¥)", "总费用(¥)"]
-        detail_data = []
-        for result in results:
-            detail_data.append([
-                result['edge_id'],
-                f"{result['from_node']}→{result['to_node']}",
-                result['v_lim'],
-                f"{result['speeding_rate']:.2f}",
-                f"{result['travel_time']:.4f}",
-                f"{result['meal_cost']:.4f}",
-                f"{result['fuel_cost']:.4f}",
-                f"{result['toll']:.4f}",
-                f"{result['penalty']:.4f}",
-                f"{result['total_cost']:.4f}"
-            ])
-        f.write(tabulate(detail_data, headers=detail_headers, tablefmt="pipe"))
+        # 通行费
+        C_base += e['toll'] * segment_distance # e['toll'] is per_km
+    return T_base, C_base
 
-# 计算基准时间（不超速情况）
-def calculate_base_time(route_segments):
-    return sum(calculate_total_cost(segment, 0)['travel_time'] for segment in route_segments)
+# 5. 计算其他所有路径的最小总费用（不超速），得到 C_min
+def dijkstra_full_graph(limits_row, limits_col, num_nodes=100, start_node_1idx=1, end_node_1idx=100, segment_d=50.0):
+    adj = {i: [] for i in range(1, num_nodes + 1)}
 
-if __name__ == "__main__":
-    # 加载限速数据
-    row_limits, col_limits = load_speed_limits()
+    def get_segment_cost_no_speeding(L_val, toll_per_km_val, dist_val):
+        if L_val == 0: return float('inf')
+        v_val = float(L_val)
+        t_val = dist_val / v_val
+        
+        cost_val = 20 * t_val # Time-based cost
+        
+        V_fuel_val = 0.0625 * v_val + 1.875
+        cost_val += V_fuel_val * (dist_val / 100.0) * 7.76 # Fuel cost
+        
+        cost_val += toll_per_km_val * dist_val # Toll cost
+        return cost_val
+
+    for r_idx in range(10):  # 0-9 grid row
+        for c_idx in range(10): # 0-9 grid col
+            u_node = r_idx * 10 + c_idx + 1
+
+            # Horizontal edge: u_node to u_node+1
+            if c_idx < 9:
+                v_node_h = u_node + 1
+                L_h = limits_row.iloc[r_idx, c_idx]
+                toll_h = 0.5 if L_h == 120 else 0.0
+                cost_h = get_segment_cost_no_speeding(L_h, toll_h, segment_d)
+                if cost_h != float('inf'):
+                    adj[u_node].append((v_node_h, cost_h))
+                    adj[v_node_h].append((u_node, cost_h)) # Bidirectional
+
+            # Vertical edge: u_node to u_node+10
+            if r_idx < 9: # Max r_idx for vertical segment start is 8 (for 9 rows in limits_col)
+                v_node_v = u_node + 10
+                L_v = limits_col.iloc[r_idx, c_idx] # limits_col is 9x10, row index r_idx (0-8), col index c_idx (0-9)
+                toll_v = 0.5 if L_v == 120 else 0.0
+                cost_v = get_segment_cost_no_speeding(L_v, toll_v, segment_d)
+                if cost_v != float('inf'):
+                    adj[u_node].append((v_node_v, cost_v))
+                    adj[v_node_v].append((u_node, cost_v)) # Bidirectional
     
-    # 构建图
-    G = build_graph(row_limits, col_limits)
+    min_costs_to_node = {i: float('inf') for i in range(1, num_nodes + 1)}
+    min_costs_to_node[start_node_1idx] = 0
+    pq = [(0, start_node_1idx)] # (cost, node)
+
+    while pq:
+        current_min_cost, u = heapq.heappop(pq)
+
+        if current_min_cost > min_costs_to_node[u]:
+            continue
+        if u == end_node_1idx: # Optimization: if we only need cost to end_node
+            return min_costs_to_node[end_node_1idx]
+
+        for v_neighbor, weight in adj[u]:
+            if min_costs_to_node[u] + weight < min_costs_to_node[v_neighbor]:
+                min_costs_to_node[v_neighbor] = min_costs_to_node[u] + weight
+                heapq.heappush(pq, (min_costs_to_node[v_neighbor], v_neighbor))
+                
+    return min_costs_to_node[end_node_1idx]
+
+C_min_alternative_paths = dijkstra_full_graph(limits_row_df, limits_col_df, segment_d=d_segment)
+
+# 6. 计算背包容量 B
+T0, C0 = compute_base_cost_time(edges_route_one, d_segment)
+B = C_min_alternative_paths - C0 # This B can be negative
+
+# 7. 计算每条边在各超速级别下的增量 Δt, ΔC
+n_segments_route_one = len(edges_route_one)
+Delta_t = np.zeros((n_segments_route_one, len(alpha_options)))
+Delta_C = np.zeros((n_segments_route_one, len(alpha_options)))
+
+for i, e in enumerate(edges_route_one):
+    L = float(e['L'])
+    toll_per_km = e['toll']
     
-    # 提取路线一的路段
-    route_one_segments = extract_route_one(G)
+    # 基准 (不超速)
+    v0 = L
+    t0 = d_segment / v0
     
-    # 计算基准时间
-    base_time = calculate_base_time(route_one_segments)
-    print(f"基准时间（不超速）: {base_time:.4f} 小时")
+    cost_time0 = 20 * t0
+    V_fuel0 = 0.0625 * v0 + 1.875
+    cost_fuel0 = V_fuel0 * (d_segment / 100.0) * 7.76
+    cost_toll0 = toll_per_km * d_segment
+    cost0 = cost_time0 + cost_fuel0 + cost_toll0
     
-    # 运行主函数
-    main()
+    for j, alpha in enumerate(alpha_options):
+        v = L * (1+alpha)
+        tk = d_segment / v
+        time_costk = 20 * tk
+        Vk = 0.0625 * v + 1.875
+        fuel_costk = Vk * (d_segment / 100.0) * 7.76
+        toll_costk = toll_per_km * d_segment
+        costk = time_costk + fuel_costk + toll_costk
+        
+        # 罚款期望
+        fine = calc_fine(L, alpha) * prob_catch_single_radar.get(alpha, 0)
+        
+        # 增量
+        Delta_t[i,j] = t0 - tk
+        Delta_C[i,j] = (costk + fine) - cost0
+
+# 8. 多选分组背包 DP
+# dp[i][c] = 在前i条边消耗增量费用不超过c时，最大节省时间
+# 这里将费用单位扩大100倍并转化为整数索引
+scale = 100
+B_int = int(np.floor(B*scale))
+dp = np.full((n_segments_route_one+1, B_int+1), -np.inf)
+choice = np.zeros((n_segments_route_one+1, B_int+1), dtype=int)
+dp[0,0] = 0
+for i in range(1, n_segments_route_one+1):
+    for c in range(B_int+1):
+        # 默认不超速
+        dp[i,c] = dp[i-1,c]
+        choice[i,c] = 0
+        
+        for j, alpha in enumerate(alpha_options):
+            cost_inc = int(np.round(Delta_C[i-1,j]*scale))
+            if c >= cost_inc and dp[i-1,c-cost_inc] > -np.inf:
+                val = dp[i-1,c-cost_inc] + Delta_t[i-1,j]
+                if val > dp[i,c]:
+                    dp[i,c] = val
+                    choice[i,c] = j
+
+# 9. 回溯最优方案
+c_best = np.argmax(dp[n_segments_route_one])
+t_best = dp[n_segments_route_one,c_best]
+alpha_sel = []
+c = c_best
+for i in range(n_segments_route_one, 0, -1):
+    j = choice[i,c]
+    alpha_sel.append(alpha_options[j]*100)
+    c -= int(np.round(Delta_C[i-1,j]*scale))
+alpha_sel.reverse()
+
+# 10. 输出结果
+print(f"最大可降低时间: {t_best:.4f} 小时")
+print(f"此时总费用: {C0 + c_best/scale:.4f} 元")
+for idx, pct in enumerate(alpha_sel, start=1):
+    e = edges_route_one[idx-1]
+    print(f"路段 {e['u']}→{e['v']}: 超速 {pct:.0f}%")
