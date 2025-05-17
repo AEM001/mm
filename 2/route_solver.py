@@ -8,8 +8,8 @@ from heapq import heappush, heappop
 # 1. 数据准备
 # 1.1 读入 CSV (路径调整到 data 文件夹下)
 # 使用原始字符串 (r'') 来避免转义序列警告
-limits_col = pd.read_csv(r'..\data\limits_col.csv', header=None).values  # 9×10
-limits_row = pd.read_csv(r'..\data\limits_row.csv', header=None).values  # 10×9
+limits_col = pd.read_csv(r'D:\Code\mm\data\limits_col.csv', header=None).values  # 9×10
+limits_row = pd.read_csv(r'D:\Code\mm\data\limits_row.csv', header=None).values  # 10×9
 
 # 1.2 构造 180 条有向边
 EDGE_LEN = 50  # km

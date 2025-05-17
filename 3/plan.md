@@ -1,187 +1,242 @@
-下面我将按顺序给出**第二部分到第五部分**的完整实现思路和示例代码（Python + `heapq`），方便你直接拿去写。假设你已经完成了第一部分，得到了：  
-- 边列表 `edges_df`（含 `eid,u,v,vmax`）  
-- 时间与费用矩阵 `t_mat[eid, k]`, `c_mat[eid, k]`，其中 `k=0,1,2,3` 对应超速档 `{0,0.2,0.5,0.7}`  
+下面给出一套**可以直接照着落地的实现方案**。整个流程分为 4 大阶段，每一步都给出所需数据结构、公式、算法、以及推荐的 Python/​开源库写法。你只要按步骤敲代码，就能算出：
 
-同时你已经拿到问题一的**最短时间路径**（路线一）的节点序列 `route1_nodes = [n0, n1, …, nm]`。
-Route One Node Sequence (0-indexed):
-0 -> 1 -> 11 -> 12 -> 13 -> 23 -> 24 -> 34 -> 44 -> 54 -> 55 -> 56 -> 57 -> 58 -> 68 -> 78 -> 88 -> 89 -> 99
+* 在保证“路线一”仍是**全网费用最优**的前提下  
+* 每一段最多**超速 70 %**时，  
+* “路线一”可以把总旅行时间压缩到 **T\*** 小时  
+* 对应的总费用 **C\***（元）  
+* 以及 19 条路段各自的超速倍率方案 **s\_e\***。  
 
-Route One Node Sequence (1-indexed for reference.md format):
-1 -> 2 -> 12 -> 13 -> 14 -> 24 -> 25 -> 35 -> 45 -> 55 -> 56 -> 57 -> 58 -> 59 -> 69 -> 79 -> 89 -> 90 -> 100
+> 注：为了让文字聚焦“怎么做”，下面不输出最终数字。按方案跑完即可得到四位小数的结果。  
 
 ---
 
-## 2. 计算竞争对手的最低期望费用 \(C_{\mathrm{bound}}\)
+## 0. 依赖与环境
 
-**目标**：假设对每条边都可以任选超速档，则全网最小期望总费用是多少？  
-即对每条 `eid`，先取 `min_k c_mat[eid,k]`，再做一次 Dijkstra。
+| 功能 | 库 | 备注 |
+|------|----|------|
+| 图结构与最短路 | **networkx** | pip install networkx |
+| MILP 求解 | **pulp**（自带 CBC）<br>或 **gurobipy** / **cplex** | pulp 足够；若装 Gurobi/CPLEX 更快 |
+| 数据处理 | pandas / numpy | 读 CSV |
+| 可选加速 | numba / cython | 仅在自定义穷举时 |
+
+---
+
+## 1. 读数据并建图  
+
+### 1.1 读取 CSV  
 
 ```python
-import numpy as np
-from heapq import heappush, heappop
+import pandas as pd, networkx as nx, itertools as it
 
-# —— 2.1 构造每条边的最小费用
-min_edge_cost = np.min(c_mat, axis=1)  # shape = (E,)
-
-# —— 2.2 建邻接表：adj[u] = list of (v, eid)
-from collections import defaultdict
-adj = defaultdict(list)
-for _, row in edges_df.iterrows():
-    eid, u, v = int(row.eid), int(row.u), int(row.v)
-    adj[u].append((v, eid))
-
-# —— 2.3 Dijkstra over 1~100 节点
-INF = 1e18
-dist = [INF]*101  # 1-based
-start, goal = route1_nodes[0], route1_nodes[-1]
-dist[start] = 0
-hq = [(0, start)]
-while hq:
-    d,u = heappop(hq)
-    if d>dist[u]: 
-        continue
-    if u==goal:
-        break
-    for v, eid in adj[u]:
-        nd = d + min_edge_cost[eid]
-        if nd < dist[v]:
-            dist[v] = nd
-            heappush(hq, (nd, v))
-
-C_bound = dist[goal]  # 竞争对手最小期望费用上界
-print(f"C_bound = {C_bound:.4f} 元")
+d = 50  # km   单段距离
+limits_row = pd.read_csv('limits_row.csv', header=None).values      # shape (10, 9)
+limits_col = pd.read_csv('limits_col.csv', header=None).values      # shape (9, 10)
 ```
 
-- **时间复杂度**：\(O(E\log V)\)，秒级可解。  
-- **结果**：`C_bound` 即步骤 2 的输出。
-
----
-
-## 3. 映射路线一到“多重选择背包”问题
-
-**目标**：路线一有 \(m\) 条边，我们要给每条边选一个档 \(k\)，使总费用 \(\sum c_{ek}\le C_{\mathrm{bound}}\)，且总时间最小。
+### 1.2 构造有向图 `G`  
 
 ```python
-# —— 3.1 从节点序列反推边序列
-# 建一个从 (u,v) 到 eid 的映射
-uv2eid = {(row.u, row.v): row.eid for _,row in edges_df.iterrows()}
-
-# 把 route1_nodes 转成边列表 route1_eids
-route1_eids = []
-for u,v in zip(route1_nodes, route1_nodes[1:]):
-    eid = uv2eid[(u,v)]
-    route1_eids.append(eid)
-
-m = len(route1_eids)
-print(f"路线一共有 {m} 条边")
-
-# —— 3.2 为背包准备 weight[i][k] = c_mat[eid, k], value[i][k] = t_mat[eid, k]
-# 注意：为了 DP 我们需要把费用放大 10000 并转成整数
-MULT = 10000
-W = int(np.floor(C_bound * MULT))  # 容量上界，向下取整
-
-# 构造二维列表
-weights = [ [ int(round(c_mat[eid,k]*MULT)) for k in range(4) ] 
-            for eid in route1_eids ]
-values  = [ [ t_mat[eid,k]               for k in range(4) ] 
-            for eid in route1_eids ]
+G = nx.DiGraph()
+for r in range(10):
+    for c in range(10):
+        idx = r*10 + c                # 0-based 路口编号
+        if c < 9:                     # 右
+            v_max = limits_row[r, c]
+            G.add_edge(idx, idx+1,
+                        d=d, v_max=v_max,
+                        highway=(v_max==120))
+        if r < 9:                     # 上
+            v_max = limits_col[r, c]
+            G.add_edge(idx, idx+10,
+                        d=d, v_max=v_max,
+                        highway=(v_max==120))
 ```
 
-此时：  
-- `weights[i][k]` 是第 \(i\) 条边第 \(k\) 档的“费用”  
-- `values[i][k]` 是对应的“时间”  
+> **边属性**：`d, v_max, highway`，后面公式都要用。  
 
 ---
 
-## 4. 动态规划求解 MCKP
+## 2. 计算“竞争者”可选路线的**最低费用**  
 
-我们用 **一维滚动数组** DP，`dp[s]` 表示“总费用恰好为 \(s\) 时能获得的最小总时间”。初始化 `dp[0]=0`，其它为 `+∞`。
+### 2.1 费用函数（守法行驶）  
+
+对一条路径 P：
+
+\[
+\begin{aligned}
+T(P) &= \sum_{e\in P} \frac{d}{v_{\max,e}}\\[4pt]
+C_{\text{time}} &= 20\,T\\
+C_{\text{fuel}} &= \sum_{e\in P} \frac{d}{100}\Bigl(0.0625\,v_{\max,e}+1.875\Bigr)\times7.76\\
+C_{\text{toll}} &= \sum_{\text{高速 }e\in P} 0.5\,d\\
+C(P) &= C_{\text{time}} + C_{\text{fuel}} + C_{\text{toll}}
+\end{aligned}
+\]
+
+### 2.2 取  **k-shortest paths**  
 
 ```python
-# —— 4.1 初始化
-dp = [float('inf')] * (W+1)
-# back[i][s] 记录第 i 类选档，用于回溯；初始化为 -1
-back = [ [-1]*(W+1) for _ in range(m) ]
+from networkx.algorithms.simple_paths import shortest_simple_paths
 
-dp[0] = 0.0
-
-# —— 4.2 分组背包 DP
-for i in range(m):
-    new_dp = [float('inf')] * (W+1)
-    new_back = [ [-1]*(W+1) for _ in range(m) ]  # 只填第 i 行
-    for s in range(W+1):
-        if dp[s] == float('inf'):
-            continue
-        # 在第 i 类（第 i 条边）选档 k
-        for k in range(4):
-            w = weights[i][k]
-            v = values[i][k]
-            s2 = s + w
-            if s2 <= W:
-                t_candidate = dp[s] + v
-                if t_candidate < new_dp[s2]:
-                    new_dp[s2] = t_candidate
-                    new_back[i][s2] = k
-    dp = new_dp
-    # 把第 i 行 back 写回到 back[i]
-    for s2,k in enumerate(new_back[i]):
-        back[i][s2] = k
-
-# —— 4.3 找到最优解：在所有 s<=W 中找 dp[s] 最小的位置 s*
-best_s = min(range(W+1), key=lambda s: dp[s])
-best_time = dp[best_s]
-best_cost = best_s / MULT
-
-print(f"最短可达时间 = {best_time:.4f} 小时；对应费用 = {best_cost:.4f} 元")
+src, dst = 0, 99
+k = 100       # 经验证 50~100 已足够
+paths = it.islice(shortest_simple_paths(G, src, dst, weight=lambda u,v,attr: d/attr['v_max']), k)
 ```
 
-- **解释**：  
-  - 每次循环 `i`（第 `i` 条边），我们由旧的 `dp` 推出新的 `new_dp`；  
-  - `back[i][s2] = k` 表示要在第 `i` 条边选第 `k` 档，才会到达费用 `s2` 的最优状态。  
+> 这里用运行时间作权重，保证前 k 条 **最快** 路线都被枚举。  
 
----
-
-## 5. 回溯超速方案并输出
+### 2.3 逐条计算费用，取最小  
 
 ```python
-# —— 5.1 回溯选档
-s = best_s
-chosen_ks = [0]*m  # 存放每条边的超速档索引
-for i in reversed(range(m)):
-    k = back[i][s]
-    chosen_ks[i] = k
-    s -= weights[i][k]
+def route_cost(path):
+    T = sum(G[u][v]['d']/G[u][v]['v_max'] for u,v in zip(path, path[1:]))
+    C_time = 20*T
+    C_fuel = sum(G[u][v]['d']/100*(0.0625*G[u][v]['v_max']+1.875)*7.76
+                 for u,v in zip(path, path[1:]))
+    C_toll = sum(0.5*G[u][v]['d'] for u,v in zip(path, path[1:]) if G[u][v]['highway'])
+    return C_time + C_fuel + C_toll
 
-# —— 5.2 输出结果
-print("最终超速方案（与路线一边序对应）：")
-for idx, (eid, k) in enumerate(zip(route1_eids, chosen_ks), start=1):
-    x = BRACKETS[k]
-    print(f"  第{idx}段 (eid={eid}) 超速倍率 = {x:.4f}")
-
-print(f"\n汇总：最短可达时间 = {best_time:.4f} 小时")
-print(f"     对应期望费用 = {best_cost:.4f} 元")
+C_competitor_min = min(route_cost(p) for p in paths)
 ```
 
-- `chosen_ks[i]` 即第 \(i\) 条边选的档，映射到实际倍率 `BRACKETS[k]`。  
-- 最终输出满足题意「在保持路线一为时间最短的前提下，把费用控制到竞争对手最低，再在此基础上尽可能缩短时间」。
+---
+
+## 3. 对“路线一”做**超速优化**  
+
+### 3.1 准备常量  
+
+```python
+route1 = [0,1,11,12,13,23,24,34,44,54,55,56,57,58,68,78,88,89,99]
+edges1  = list(zip(route1, route1[1:]))
+
+# 罚款表（根据限速区间+超速档位）
+fine_table = {
+    # (v_max 区间上界, 超速倍率) -> (被抓概率, 罚款额)
+    # 下面只列举一个示例元祖；完整要覆盖四档倍率
+    (50, 1.2): (0.70, 50),
+    ...
+}
+```
+
+> 四档倍率：1.0, 1.2, 1.5, 1.7  
+> 每个倍率对应「可能被抓概率」×「罚款金额」→ **期望罚款**。  
+
+### 3.2 MILP 变量  
+
+令  
+- `x_e,a ∈ {0,1}` 表示边 e 选择倍率 `a ∈ {1.0,1.2,1.5,1.7}`  
+- 对每条 e：`∑_a x_e,a = 1`  
+
+### 3.3 约束  
+
+1. **费用不劣**  
+
+\[
+C_{\text{route1}}(x)\;\le\;C_{\text{competitor\_min}}-\epsilon
+\]
+
+（取 ε = 1e-4 即可）  
+
+2. **费用分解**  
+
+\[
+\begin{aligned}
+T(x) &= \sum_{e}\sum_{a} \frac{d}{a\,v_{\max,e}}\,x_{e,a} \\[4pt]
+C_{\text{time}} &= 20\,T(x)\\
+C_{\text{fuel}} &= \sum_{e}\sum_{a} 
+      \frac{d}{100}\Bigl(0.0625\,a v_{\max,e}+1.875\Bigr)\times7.76\,x_{e,a}\\
+C_{\text{toll}} &= \sum_{\text{高速 }e} 0.5\,d \quad(\text{常数})\\
+C_{\text{fine}} &= \sum_{e}\sum_{a} \text{prob}(v_{\max,e},a)\times
+                  \text{fine}(v_{\max,e},a)\;x_{e,a}\\[4pt]
+C_{\text{route1}} &= C_{\text{time}}+C_{\text{fuel}}+C_{\text{toll}}+C_{\text{fine}}
+\end{aligned}
+\]
+
+全部都是 **线性** 表达式。  
+
+### 3.4 目标函数  
+
+\[
+\min T(x) \quad\text{(或等价地）}\quad \max \text{节省时间}
+\]
+
+### 3.5 用 pulp 编码  
+
+```python
+import pulp as pl
+A = [1.0, 1.2, 1.5, 1.7]
+prob = pl.LpProblem('Overspeed', pl.LpMinimize)
+
+x = {(e,a): pl.LpVariable(f'x_{u}_{v}_{a}', cat='Binary')
+     for (u,v) in edges1 for a in A}
+
+# 目标：总时间
+prob += pl.lpSum(G[u][v]['d']/(a*G[u][v]['v_max'])*x[(u,v),a]
+                 for (u,v) in edges1 for a in A)
+
+# 每段只能选一个倍率
+for u,v in edges1:
+    prob += pl.lpSum(x[(u,v),a] for a in A) == 1
+
+# 总费用约束
+C_time = 20*prob.objective
+C_fuel = pl.lpSum(G[u][v]['d']/100*(0.0625*a*G[u][v]['v_max']+1.875)*7.76*x[(u,v),a]
+                  for (u,v) in edges1 for a in A)
+C_toll = sum(0.5*G[u][v]['d'] for (u,v) in edges1 if G[u][v]['highway'])
+C_fine = pl.lpSum(fine_table[(limit_class(G[u][v]['v_max']),a)][0] *
+                  fine_table[(limit_class(G[u][v]['v_max']),a)][1] *
+                  x[(u,v),a]
+                  for (u,v) in edges1 for a in A)
+
+prob += C_time + C_fuel + C_toll + C_fine <= C_competitor_min - 1e-4
+prob.solve(pl.PULP_CBC_CMD())
+```
+
+> `limit_class()` 用于把 37 km/h、68 km/h … 映射到 “限速 ≤50”, “50–80”, “80–100”, “100+” 四档。  
+
+### 3.6 输出结果  
+
+```python
+s_star = { (u,v): a for (u,v),a in x if pl.value(x[(u,v),a])>0.5 }
+T_star = pl.value(prob.objective)
+C_star = (20*T_star + pl.value(C_fuel+C_fine) + C_toll)
+```
+
+然后把 `T_star, C_star` 保留四位小数，`s_star` 转成表格即可。  
 
 ---
 
-## 6. （可选）验证
+## 4. 可选：连续倍率 / 穷举替代  
 
-- **重算总时间**：  
-  ```python
-  total_t = sum(values[i][chosen_ks[i]] for i in range(m))
-  assert abs(total_t - best_time) < 1e-6
-  ```
-- **重算总费用**：  
-  ```python
-  total_c = sum(weights[i][chosen_ks[i]] for i in range(m)) / MULT
-  assert abs(total_c - best_cost) < 1e-6
-  ```
-- **Monte-Carlo 仿真**（选做，检验期望罚款模型）：  
-  - 按 `P_det` 随机判定罚款，跑 1e4 次，统计平均费用与 DP 值对比。  
+1. **连续倍率**：把 `a` 从离散变为变量 `1 ≤ s_e ≤ 1.7`  
+   * 罚款和被抓概率变成 **分段常数**，需要额外 0-1 变量做 Big-M 切分；与离散版同规模。  
+2. **穷举剪枝**：19 段 × 4 档 = 2.7 亿 组合  
+   * 可自顶向下深度优先 + **截至条件**（一旦费用超标就剪枝）  
+   * 但 MILP 已能秒级出全局最优，没必要再写穷举。  
 
 ---
 
-这样，你就有了从“构造竞争上界”到“MCKP DP 选档”再到“结果回溯输出”的完整代码骨架。按此改写、调试，即可得到问题三的最优超速时间和方案。祝编码顺利！
+## 5. 完整跑通后的交付物  
+
+1. **结果文件**（例如 `solution.csv`）  
+
+| Edge (u→v) | v_max | Chosen a | Segment Speed (km/h) |
+|------------|-------|----------|----------------------|
+| 0→1        | 90    | 1.5      | 135                  |
+| …          | …     | …        | …                    |
+
+2. `Time = T_star` (h)  
+3. `Cost = C_star` (¥)  
+
+---
+
+## 6. 常见坑 & 调试技巧  
+
+| 现象 | 排查思路 |
+|------|----------|
+| **无可行解** | 把 `ε` 设成 0；如果仍 infeasible，多半你的罚款概率/金额表或者竞争者费用算错 |
+| **结果时间变化很小** | 检查是否把所有高速路段都限速 120（无法再超速） |
+| **求解慢** | 确认使用了整数版 4 档倍率；连 CBC 都是秒级 |
+
+---
+
+按上面代码框搭起来，5~10 分钟即可得到最终四位小数答案。祝你顺利复现！
