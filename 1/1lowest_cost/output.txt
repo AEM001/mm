@@ -67,10 +67,6 @@ Saved episode costs plot to episode_costs_c1.png
 
 Extracting optimal path for C1...
 
-Route Two (Cost Minimization) Node Sequence (0-indexed):
-0 -> 10 -> 11 -> 21 -> 31 -> 41 -> 51 -> 52 -> 62 -> 72 -> 82 -> 92 -> 93 -> 94 -> 95 -> 96 -> 97 -> 98 -> 99        
-0 -> 10 -> 11 -> 21 -> 31 -> 41 -> 51 -> 52 -> 62 -> 72 -> 82 -> 92 -> 93 -> 94 -> 95 -> 96 -> 97 -> 98 -> 99        (1-indexed for reference.md format):
-
 Route Two Node Sequence (1-indexed for reference.md format):
 1 -> 11 -> 12 -> 22 -> 32 -> 42 -> 52 -> 53 -> 63 -> 73 -> 83 -> 93 -> 94 -> 95 -> 96 -> 97 -> 98 -> 99 -> 100
 
