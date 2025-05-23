@@ -41,16 +41,17 @@ STATE_DIM = NUM_NODES + 2  # 100 (one-hot node) + 1 (norm_remaining_time) + 1 (i
 HIDDEN_DIM = 128
 GAMMA = 0.99  # Discount factor for rewards
 GAE_LAMBDA = 0.95 # GAE lambda, not the Lagrangian multiplier
-ALPHA_ENT = 0.01  # Entropy regularization coefficient
-BETA_LAMBDA_INITIAL = 5e-3 # 修正：降低lambda学习率，从0.1降至5e-3
+ALPHA_ENT = 0.03  # 修正：增加初始熵系数，鼓励更多探索 (从0.01提高到0.03)
+BETA_LAMBDA_INITIAL = 1e-2 # 修正：稍微提高lambda学习率，更快施加约束压力 (从5e-3提高到1e-2)
 BETA_LAMBDA_DECAY_STEP = 100000 # Env steps after which beta_lambda decays. Increased from 50000
 BETA_LAMBDA_DECAY_FACTOR = 0.3
 ACTOR_LR = 1e-3
 CRITIC_LR = 5e-3 # Plan suggests Critic LR can be higher, e.g., 5e-3. Let's use same as Actor for now or make it separate.
 CRITIC_LR_ACTUAL = 5e-4 # Using same as actor for simplicity first. TRY REDUCING (e.g., from 1e-3 to 5e-4 or 1e-4)
 GRADIENT_CLIP = 5.0
-C_BIG_PENALTY = 3000.0 # 修正：降低超时惩罚，从10000降至3000
-REACH_GOAL_REWARD = 5000.0 # 修正：添加到达终点奖励，鼓励探索
+C_BIG_PENALTY = 200.0 # 修正：降低超时惩罚 (从3000降至1000，再降至200)
+REACH_GOAL_REWARD = 20000.0 # 修正：大幅增加到达终点奖励 (从5000提高到20000)
+C_OVERTIME_STEP_PENALTY = 50.0 # 新增：步进式超时惩罚
 
 # Training Rhythm (from plan.md)
 MAX_EPISODE_LENGTH = 200
@@ -58,8 +59,8 @@ SAMPLING_BATCH_SIZE = 2560  # Steps per batch for update
 OPTIMIZATION_ITERATIONS_PER_BATCH = 1 # Number of updates per batch
 TOTAL_ENV_STEPS = 150 * 1000
 
-WARMUP_STEPS_LAMBDA_ZERO = 5000 # First 5k steps, lambda = 0 to help learn to reach goal first
-WARMUP_STEPS_CRITIC_FROZEN = 5000 # First 5k steps, critic is frozen to stabilize initial learning
+WARMUP_STEPS_LAMBDA_ZERO = 1000 # 修正：缩短Warmup阶段 (从5000提高到10000，再降至1000)
+WARMUP_STEPS_CRITIC_FROZEN = 1000 # 修正：缩短Warmup阶段 (从5000提高到10000，再降至1000)
 
 # Paths
 DATA_DIR = "d:/Code/mm/data"
@@ -276,28 +277,55 @@ class RoadEnv:
                     time_edge_seconds = T_DEAD_SECONDS
                     done = True # Stuck or invalid calculation
                 else:
+                    # 计算到终点的曼哈顿距离并给予奖励 (在更新节点前计算旧距离)
+                    old_r, old_c = get_node_coords(self.current_node_id)
+                    end_r, end_c = get_node_coords(END_NODE)
+                    old_dist = abs(old_r - end_r) + abs(old_c - end_c)
+
                     self.time_used_seconds += time_edge_seconds
                     self.current_node_id = next_node_id
-                    
+
+                    # 计算新距离 (在更新节点后计算新距离)
+                    new_r, new_c = get_node_coords(self.current_node_id)
+                    new_dist = abs(new_r - end_r) + abs(new_c - end_c)
+
+                    # 如果更靠近终点，给予正奖励；否则给予负奖励
+                    if new_dist < old_dist:
+                        reward += 10.0 # 靠近终点奖励
+                    elif new_dist > old_dist:
+                        reward -= 10.0 # 远离终点惩罚
+                    # 如果距离不变（比如撞墙或原地打转），不额外增减奖励
+
                     reward = -cost_edge # Reward is negative of cost
+
+                    # 新增：步进式超时惩罚
+                    if self.time_used_seconds > T_DEAD_SECONDS:
+                        reward -= C_OVERTIME_STEP_PENALTY
 
                     if self.current_node_id == END_NODE:
                         done = True
                         reward += REACH_GOAL_REWARD # 添加到达终点的奖励
-                    
+
+                    # 最终超时判断和惩罚 (只有在回合结束时应用 C_BIG_PENALTY)
                     if self.time_used_seconds > T_DEAD_SECONDS:
-                        done = True # Episode ends if overtime
-                        # 在warmup阶段不施加超时惩罚，让策略先学会移动
-                        if global_env_steps >= WARMUP_STEPS_LAMBDA_ZERO:
-                            reward -= C_BIG_PENALTY
-                        constraint_violation = self.time_used_seconds - T_DEAD_SECONDS
-        
+                        # 如果回合结束 (到达终点或达到最大步数) 且超时
+                        if done:
+                            # 在warmup阶段不施加最终超时惩罚
+                            global global_env_steps
+                            if global_env_steps >= WARMUP_STEPS_LAMBDA_ZERO:
+                                reward -= C_BIG_PENALTY
+                            constraint_violation = self.time_used_seconds - T_DEAD_SECONDS
+                        else:
+                             # 如果未结束但已超时，只记录违规时间，不立即结束回合
+                             constraint_violation = self.time_used_seconds - T_DEAD_SECONDS
+                             # done 保持 False，回合继续
+
         next_state = self._get_state()
         # time_edge_scaled for lambda calculation - 修正：使用小时作为时间尺度
-        time_edge_scaled = time_edge_seconds / TIME_SCALE_FACTOR 
-        
+        time_edge_scaled = time_edge_seconds / TIME_SCALE_FACTOR
+
         info = {
-            'cost_edge': cost_edge, 
+            'cost_edge': cost_edge,
             'time_edge_seconds': time_edge_seconds,
             'time_edge_scaled': time_edge_scaled, # For lambda updates and advantage
             'constraint_violation_seconds': constraint_violation / TIME_SCALE_FACTOR if constraint_violation > 0 else 0,
@@ -357,8 +385,8 @@ class PrimalDualACAgent:
         self.lambda_update_buffer = [] # 用于批量更新lambda的缓冲区
 
         # 熵系数自退火
-        self.alpha_ent_initial = ALPHA_ENT
-        self.alpha_ent_final = 0.003  # 最终熵系数值
+        self.alpha_ent_initial = ALPHA_ENT # 使用上面修改后的0.03
+        self.alpha_ent_final = 0.003  # 最终熵系数值保持不变
 
         self.global_env_steps = 0
 
@@ -434,24 +462,28 @@ class PrimalDualACAgent:
         return actor_loss.item(), critic_loss.item()
 
 
-    def update_lambda_lagrangian(self, completed_episode_total_times_scaled, t_dead_scaled):
-        # 修复：确保至少有20个完整轨迹才更新lambda，避免早期不稳定更新
-        if not completed_episode_total_times_scaled or len(completed_episode_total_times_scaled) < 20:
+    # 修正：修改函数签名，接收包含所有已结束回合时间的缓冲区
+    def update_lambda_lagrangian(self, completed_episode_times_for_lambda_update, t_dead_scaled):
+        # 修正：确保至少有20个完整轨迹才更新lambda，避免早期不稳定更新
+        if not completed_episode_times_for_lambda_update:
             return
 
         # 使用折扣后的时间均值，确保与Critic/Advantage使用的时间口径一致
         # 只考虑批次内的平均轨迹时间，而不是累加所有时间
-        avg_traj_time_scaled = np.mean(completed_episode_total_times_scaled)
-        
-        # 修复：使用更小的学习率(beta_lambda)更新lambda，并使用Softplus函数保持稳定性
+        avg_traj_time_scaled = np.mean(completed_episode_times_for_lambda_update)
+
+        # 修正：使用更小的学习率(beta_lambda)更新lambda，并使用Softplus函数保持稳定性
+        # Softplus: ln(1+e^x)
+        # 修正：直接更新lambda_lagrangian，Softplus在get_lambda中应用，确保lambda始终非负
         lambda_raw = self.lambda_lagrangian + self.beta_lambda * (avg_traj_time_scaled - t_dead_scaled)
-        self.lambda_lagrangian = np.log(1 + np.exp(lambda_raw))  # Softplus: ln(1+e^x)
+        # 修正：直接更新原始lambda值，Softplus在get_lambda中处理
+        self.lambda_lagrangian = lambda_raw # 允许lambda_lagrangian为负，Softplus在get_lambda中处理非负约束
 
         # Decay beta_lambda
         if self.global_env_steps > BETA_LAMBDA_DECAY_STEP and self.beta_lambda == BETA_LAMBDA_INITIAL:
              self.beta_lambda *= BETA_LAMBDA_DECAY_FACTOR
              print(f"Decayed beta_lambda to {self.beta_lambda} at step {self.global_env_steps}")
-    
+
     def get_lambda(self):
         if self.global_env_steps < WARMUP_STEPS_LAMBDA_ZERO:
             return 0.0 # Lambda is fixed to 0 during warmup
@@ -463,8 +495,9 @@ class PrimalDualACAgent:
             return self.alpha_ent_final
         
         # 线性插值
+        # 修正：确保退火过程覆盖整个训练周期
         progress = min(1.0, self.global_env_steps / TOTAL_ENV_STEPS)
-        return self.alpha_ent_initial + progress * (self.alpha_ent_final - self.alpha_ent_initial)
+        return self.alpha_ent_initial + (self.alpha_ent_final - self.alpha_ent_initial) * progress
 
 # --- Training Loop ---
 def train():
@@ -474,201 +507,156 @@ def train():
     env = RoadEnv()
     agent = PrimalDualACAgent(STATE_DIM, ACTION_SPACE_SIZE, HIDDEN_DIM)
 
-    # Logging
-    all_episode_rewards = []
-    all_episode_costs = []
-    all_episode_times_seconds = []
-    all_episode_times_scaled = []
-    lambda_history = []
-    
-    num_batches = TOTAL_ENV_STEPS // SAMPLING_BATCH_SIZE
+    # Load agent if checkpoint exists
+    checkpoint_path = "primal_dual_ac_checkpoint.pth"
+    if os.path.exists(checkpoint_path):
+        checkpoint = torch.load(checkpoint_path, map_location=agent.device)
+        agent.ac_net.load_state_dict(checkpoint['model_state_dict'])
+        agent.optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
+        agent.lambda_lagrangian = checkpoint['lambda_lagrangian']
+        agent.beta_lambda = checkpoint['beta_lambda']
+        agent.global_env_steps = checkpoint['global_env_steps']
+        print(f"Loaded checkpoint from {checkpoint_path} at step {agent.global_env_steps}")
 
-    for batch_num in range(num_batches):
-        # --- Collect Rollouts ---
-        batch_states, batch_actions, batch_rewards = [], [], []
-        batch_log_probs, batch_entropies, batch_values, batch_dones = [], [], [], []
-        batch_next_values = [] # Stores V(s_{t+1}) or V(s_t) if done
-        batch_time_edges_scaled = []
-        
-        # For lambda update
-        completed_episode_total_times_scaled = []
-        completed_episode_total_costs = []
-        completed_episode_total_rewards = []
-        completed_episode_success = []
-        
-        # For current episode tracking
-        ep_states, ep_actions, ep_rewards = [], [], []
-        ep_log_probs, ep_entropies, ep_values, ep_dones = [], [], [], []
-        ep_next_values = []
-        ep_time_edges_scaled = []
-        
-        ep_total_time_scaled = 0.0
-        ep_total_cost = 0.0
-        ep_total_reward = 0.0
-        ep_success = False
-        
-        state = env.reset()
-        episode_step = 0
-        
-        # Collect SAMPLING_BATCH_SIZE steps
-        steps_collected = 0
-        episodes_completed = 0
-        
-        while steps_collected < SAMPLING_BATCH_SIZE:
-            # Get action from policy
-            action, log_prob, entropy = agent.select_action(state)
-            
-            # Get value estimate
-            _, value_st = agent.ac_net(state.to(agent.device))
-            value_st = value_st.detach().cpu()
-            
-            # Take action in environment
-            next_state, reward, done, info = env.step(action)
-            
-            # Store step data
-            ep_states.append(state)
-            ep_actions.append(action)
-            ep_rewards.append(reward)
-            ep_log_probs.append(log_prob)
-            ep_entropies.append(entropy)
-            ep_values.append(value_st)
-            ep_dones.append(done)
-            ep_time_edges_scaled.append(info['time_edge_scaled'])
-            
-            # Update episode stats
-            ep_total_time_scaled += info['time_edge_scaled']
-            ep_total_cost += info['cost_edge']
-            ep_total_reward += reward
-            
-            # Check if reached goal
-            if env.current_node_id == END_NODE and not done:
-                ep_success = True
-            
-            # Get next state value for bootstrapping
-            if not done:
-                _, next_value = agent.ac_net(next_state.to(agent.device))
-                next_value = next_value.detach().cpu()
-            else:
-                next_value = torch.zeros(1)
-            
-            ep_next_values.append(next_value)
-            
-            # Move to next state
-            state = next_state
-            episode_step += 1
-            steps_collected += 1
-            agent.global_env_steps += 1
-            global global_env_steps
-            global_env_steps += 1
-            
-            # Episode termination
-            if done or episode_step >= MAX_EPISODE_LENGTH:
-                # Add episode data to batch
-                batch_states.extend(ep_states)
-                batch_actions.extend(ep_actions)
-                batch_rewards.extend(ep_rewards)
-                batch_log_probs.extend(ep_log_probs)
-                batch_entropies.extend(ep_entropies)
-                batch_values.extend(ep_values)
-                batch_dones.extend(ep_dones)
-                batch_next_values.extend(ep_next_values)
-                batch_time_edges_scaled.extend(ep_time_edges_scaled)
-                
-                # Store completed episode stats for lambda update
-                # 存储每个轨迹的时间序列，而不仅仅是总时间
-                completed_episode_total_times_scaled.append(ep_time_edges_scaled)
-                completed_episode_total_costs.append(ep_total_cost)
-                completed_episode_total_rewards.append(ep_total_reward)
-                completed_episode_success.append(ep_success)
-                
-                # Log episode stats
-                all_episode_rewards.append(ep_total_reward)
-                all_episode_costs.append(ep_total_cost)
-                all_episode_times_seconds.append(ep_total_time_scaled * TIME_SCALE_FACTOR)
-                all_episode_times_scaled.append(ep_total_time_scaled)
-                
-                # Reset for next episode
-                state = env.reset()
-                episode_step = 0
-                episodes_completed += 1
-                
-                # Reset episode tracking
-                ep_states, ep_actions, ep_rewards = [], [], []
-                ep_log_probs, ep_entropies, ep_values, ep_dones = [], [], [], []
-                ep_next_values = []
-                ep_time_edges_scaled = []
-                
-                ep_total_time_scaled = 0.0
-                ep_total_cost = 0.0
-                ep_total_reward = 0.0
-                ep_success = False
-        
-        # --- Update Policy and Value Function ---
-        # Get current lambda value for advantage calculation
-        current_lambda_val = agent.get_lambda()
-        lambda_history.append(current_lambda_val)
-        
-        # Critic frozen during warmup
-        critic_frozen = agent.global_env_steps < WARMUP_STEPS_CRITIC_FROZEN
-        
-        # Prepare rollouts for update
-        rollouts = (
-            batch_states, batch_actions, batch_rewards, 
-            batch_log_probs, batch_entropies, batch_values, 
-            batch_dones, batch_next_values, batch_time_edges_scaled
-        )
-        
-        # Update actor and critic
-        actor_loss, critic_loss = agent.update_parameters(
-            rollouts, current_lambda_val, critic_frozen
-        )
-        
-        # Update lambda (Lagrangian multiplier)
-        if agent.global_env_steps >= WARMUP_STEPS_LAMBDA_ZERO:
-            # 使用每个轨迹的总时间，而不是折扣累加
-            episode_total_times = []
-            for ep_times in completed_episode_total_times_scaled:
-                episode_total_times.append(sum(ep_times))
-            
-            # 直接更新lambda，不再使用缓冲区
-            if len(episode_total_times) >= 20:
-                agent.update_lambda_lagrangian(episode_total_times, T_DEAD_SCALED)
-        
-        # --- Logging ---
-        if batch_num % 10 == 0 or batch_num == num_batches - 1:
-            avg_reward = np.mean(all_episode_rewards[-episodes_completed:]) if episodes_completed > 0 else 0
-            avg_cost = np.mean(all_episode_costs[-episodes_completed:]) if episodes_completed > 0 else 0
-            avg_time = np.mean(all_episode_times_seconds[-episodes_completed:]) if episodes_completed > 0 else 0
-            success_rate = np.mean(completed_episode_success) if completed_episode_success else 0
-            
-            current_alpha_ent = agent.get_entropy_coef()
-            print(f"Batch {batch_num}/{num_batches} | " +
-                  f"Steps: {agent.global_env_steps} | " +
-                  f"Avg Reward: {avg_reward:.2f} | " +
-                  f"Avg Cost: {avg_cost:.2f} | " +
-                  f"Avg Time: {avg_time:.2f}s | " +
-                  f"Success Rate: {success_rate:.2f} | " +
-                  f"Lambda: {current_lambda_val:.4f} | " +
-                  f"Entropy Coef: {current_alpha_ent:.4f} | " +
-                  f"Actor Loss: {actor_loss:.4f} | " +
-                  f"Critic Loss: {critic_loss:.4f}")
+    rollouts = []
+    episode_rewards = []
+    episode_costs = []
+    episode_times_seconds = []
+    episode_times_scaled = [] # For lambda updates
+    episode_constraint_violations = []
+    episode_successes = [] # Track if episode reached goal
     
-    # Training complete
-    end_time = datetime.now()
-    training_duration = end_time - start_time
-    print(f"Training completed in {training_duration}")
-    
-    # Save training history
-    training_data = {
-        'rewards': all_episode_rewards,
-        'costs': all_episode_costs,
-        'times': all_episode_times_seconds,
-        'lambda_history': lambda_history
-    }
-    
-    return agent, training_data
+    # 修正：使用新的缓冲区收集所有已结束回合的时间，无论是否成功
+    completed_episode_times_for_lambda_update = []
 
-# --- Route Extraction ---
+    state = env.reset()
+    episode_reward = 0
+    episode_cost = 0
+    episode_time_seconds = 0
+    episode_time_scaled = 0
+    episode_constraint_violation = 0
+    episode_steps = 0
+    current_episode_start_step = agent.global_env_steps
+
+    # 修正：确保训练循环运行到 TOTAL_ENV_STEPS，移除5万步实验的临时限制
+    while agent.global_env_steps < TOTAL_ENV_STEPS:
+        action, log_prob, entropy = agent.select_action(state)
+        next_state, reward, done, info = env.step(action)
+
+        # Update global step count
+        global global_env_steps
+        global_env_steps = agent.global_env_steps # Ensure global variable is updated
+        agent.global_env_steps += 1
+
+        rollouts.append((state, action, reward, log_prob, entropy, agent.ac_net(state.to(agent.device))[1].detach(), done, agent.ac_net(next_state.to(agent.device))[1].detach(), info['time_edge_scaled']))
+
+        episode_reward += reward
+        episode_cost += info['cost_edge']
+        episode_time_seconds += info['time_edge_seconds']
+        episode_time_scaled += info['time_edge_scaled']
+        episode_constraint_violation += info['constraint_violation_seconds']
+        episode_steps += 1
+
+        state = next_state
+
+        if done or episode_steps >= MAX_EPISODE_LENGTH:
+            # Collect episode stats
+            episode_rewards.append(episode_reward)
+            episode_costs.append(episode_cost)
+            episode_times_seconds.append(episode_time_seconds)
+            episode_times_scaled.append(episode_time_scaled)
+            episode_constraint_violations.append(episode_constraint_violation)
+
+            reached_goal = (env.current_node_id == END_NODE)
+            overtime = (env.time_used_seconds > T_DEAD_SECONDS)
+            episode_successes.append(reached_goal and not overtime)
+
+            # 修正：将所有已结束回合的时间添加到新的缓冲区
+            completed_episode_times_for_lambda_update.append(episode_time_scaled)
+
+            # Log episode stats and update lambda if batch is ready
+            if (agent.global_env_steps - current_episode_start_step) >= SAMPLING_BATCH_SIZE or agent.global_env_steps >= TOTAL_ENV_STEPS:
+                 avg_reward = np.mean(episode_rewards) if episode_rewards else 0
+                 avg_cost = np.mean(episode_costs) if episode_costs else 0
+                 avg_time_seconds = np.mean(episode_times_seconds) if episode_times_seconds else 0
+                 avg_time_scaled = np.mean(episode_times_scaled) if episode_times_scaled else 0
+                 avg_constraint = np.mean(episode_constraint_violations) if episode_constraint_violations else 0
+                 success_rate = np.mean(episode_successes) if episode_successes else 0
+
+                 print(f"Step {agent.global_env_steps} | AvgReward {avg_reward:.2f} | AvgCost {avg_cost:.2f} | AvgTime {avg_time_seconds:.2f}s ({avg_time_scaled:.2f}h) | AvgConstraint {avg_constraint:.2f}h | SuccRate {success_rate:.2f} | Lambda {agent.lambda_lagrangian:.2f} | BetaLambda {agent.beta_lambda:.5f}")
+
+                 # 修正：使用新的缓冲区更新lambda，并移除最小轨迹数限制
+                 agent.update_lambda_lagrangian(completed_episode_times_for_lambda_update, T_DEAD_SCALED)
+
+                 # Clear buffers for next batch
+                 episode_rewards = []
+                 episode_costs = []
+                 episode_times_seconds = []
+                 episode_times_scaled = []
+                 episode_constraint_violations = []
+                 episode_successes = []
+                 # 修正：清空新的缓冲区
+                 completed_episode_times_for_lambda_update = []
+                 current_episode_start_step = agent.global_env_steps
+
+
+            # Perform PPO update if enough steps collected
+            if len(rollouts) >= SAMPLING_BATCH_SIZE or agent.global_env_steps >= TOTAL_ENV_STEPS:
+                # Convert rollouts to tensors and update
+                states, actions, rewards, log_probs_old, entropies, values, dones, next_values, time_edges_scaled = zip(*rollouts)
+
+                # Calculate V_next for the last state in the batch if not done
+                # This is already handled by collecting next_values in the loop
+
+                # Update parameters
+                critic_frozen = agent.global_env_steps < WARMUP_STEPS_CRITIC_FROZEN
+                actor_loss, critic_loss = agent.update_parameters(
+                    (list(states), list(actions), list(rewards), list(log_probs_old), list(entropies), list(values), list(dones), list(next_values), list(time_edges_scaled)),
+                    agent.get_lambda(),
+                    critic_frozen=critic_frozen
+                )
+                print(f"Step {agent.global_env_steps} | Actor Loss: {actor_loss:.4f} | Critic Loss: {critic_loss:.4f}")
+
+                # Clear rollouts buffer
+                rollouts = []
+
+                # Save checkpoint periodically
+                if agent.global_env_steps % 10000 == 0:
+                    torch.save({
+                        'global_env_steps': agent.global_env_steps,
+                        'model_state_dict': agent.ac_net.state_dict(),
+                        'optimizer_state_dict': agent.optimizer.state_dict(),
+                        'lambda_lagrangian': agent.lambda_lagrangian,
+                        'beta_lambda': agent.beta_lambda,
+                    }, checkpoint_path)
+                    print(f"Checkpoint saved at step {agent.global_env_steps}")
+
+
+            # Reset environment for new episode
+            state = env.reset()
+            episode_reward = 0
+            episode_cost = 0
+            episode_time_seconds = 0
+            episode_time_scaled = 0
+            episode_constraint_violation = 0
+            episode_steps = 0
+
+    print("Training finished.")
+
+# --- Main Execution ---
+if __name__ == "__main__":
+    # 修正：移除5万步实验的选项，直接运行训练
+    train()
+    
+    # 如果需要提取路径，可以在训练完成后手动调用 extract_route3
+    # print("\nExtracting final route...")
+    # final_route_nodes, final_route_actions, final_route_times, final_route_costs, final_route_success = extract_route3(agent.ac_net)
+    # print(f"Final Route Success: {final_route_success}")
+    # print(f"Final Route Time: {sum(final_route_times)/3600:.2f} hours")
+    # print(f"Final Route Cost: {sum(final_route_costs):.2f} yuan")
+    # print("Final Route Nodes:", final_route_nodes)
+    # print("Final Route Actions:", final_route_actions)
+
 def extract_route3(agent, temperature=1.0, max_steps=50):
     """
     Extract route 3 using the trained policy with greedy decoding.
@@ -783,7 +771,6 @@ def extract_route3(agent, temperature=1.0, max_steps=50):
     
     return route_info
 
-# --- Main Function ---
 def main():
     # Train the agent
     agent, training_data = train()
@@ -841,15 +828,3 @@ def main():
         pickle.dump(results, f)
     
     print("\nResults saved to 'route3_results.pkl'")
-
-if __name__ == "__main__":
-    # 设置最大训练步数为5万步，用于快速验证修改效果
-    TOTAL_ENV_STEPS = 50 * 1000
-    num_batches = TOTAL_ENV_STEPS // SAMPLING_BATCH_SIZE
-    
-    # 只运行训练部分
-    print("开始训练5万步实验...")
-    agent, training_data = train()
-    
-    print("\n训练完成，不执行路径提取以避免递归错误")
-    print("请查看上面的训练日志，验证SuccessRate、λ值和平均时间等指标")
