@@ -1,0 +1,47 @@
+最优GAM模型分析结果: M2_interact_WB
+======================================================================
+模型比较:
+                                         模型    伪R²       AICc 显著项数
+                                M1_baseline 0.2220 1044488.92  3/3
+                             M2_interact_WB 0.2322 1042287.85  4/4
+                             M3_interact_WA 0.2364 1042741.67  4/4
+                             M4_interact_BA 0.2342 1049076.12  4/4
+               M5_all_pairwise_interactions 0.2579 1044745.93  6/6
+                    M6_add_pregnancy_linear 0.2233 1044139.17  3/4
+                        M7_add_birth_linear 0.2241 1045189.89  3/4
+                   M8_add_preg_birth_linear 0.2242 1043197.66  3/5
+M9_full_main_linear_counts_all_interactions 0.2608 1044492.17  6/8
+
+======================================================================
+最优模型 (M2_interact_WB) 摘要:
+LinearGAM                                                                                                 
+=============================================== ==========================================================
+Distribution:                        NormalDist Effective DoF:                                     42.4859
+Link Function:                     IdentityLink Log Likelihood:                               -521098.4281
+Number of Samples:                         1006 AIC:                                          1042283.8279
+                                                AICc:                                         1042287.8518
+                                                GCV:                                                 0.001
+                                                Scale:                                              0.0009
+                                                Pseudo R-Squared:                                   0.2322
+==========================================================================================================
+Feature Function                  Lambda               Rank         EDoF         P > x        Sig. Code   
+================================= ==================== ============ ============ ============ ============
+s(0)                              [0.6]                20           13.2         2.97e-09     ***         
+s(1)                              [0.6]                20           10.5         4.11e-05     ***         
+s(2)                              [0.6]                20           12.0         2.46e-10     ***         
+te(0, 1)                          [0.6 0.6]            100          6.8          3.02e-08     ***         
+intercept                                              1            0.0          1.11e-16     ***         
+==========================================================================================================
+Significance codes:  0 '***' 0.001 '**' 0.01 '*' 0.05 '.' 0.1 ' ' 1
+
+WARNING: Fitting splines and a linear function to a feature introduces a model identifiability problem
+         which can cause p-values to appear significant when they are not.
+
+WARNING: p-values calculated in this manner behave correctly for un-penalized models or models with
+         known smoothing parameters, but when smoothing parameters have been estimated, the p-values
+         are typically lower than they should be, meaning that the tests reject the null too readily.
+
+整体模型显著性近似F检验:
+F(43, 963) = 5.775, p = 1.373e-26
+
+注: GAM 平滑项的 p 值与上述 F 检验均为近似量，且 pyGAM 在估计平滑参数时 p 值可能偏小，请谨慎解读。
