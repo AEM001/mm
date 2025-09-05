@@ -2,26 +2,21 @@
 # -*- coding: utf-8 -*-
 """
 改进的分数logit回归 - 实现孕周×BMI低自由度样条交互+L2正则
-按照专家意见进行唯一优先改进：低自由度交互 + L2正则 + 分组CV选超参
+优先改进：低自由度交互 + L2正则 + 分组CV选超参
 """
 
 import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
-import seaborn as sns
 import os
 import sys
 import warnings
 from sklearn.model_selection import GroupKFold, ParameterGrid
 from sklearn.metrics import mean_absolute_error, mean_squared_error, r2_score
-from sklearn.metrics import classification_report, roc_auc_score, roc_curve
-from sklearn.calibration import calibration_curve
 import statsmodels.api as sm
-from patsy import dmatrix, dmatrices
-from scipy import stats
-import itertools
+from patsy import dmatrix
 
-# 确保可以导入项目根目录的模块
+# 如果需要从项目根目录导入模块，可启用以下路径设置
 sys.path.append('/Users/Mac/Downloads/mm')
 from set_chinese_font import set_chinese_font
 
@@ -214,123 +209,7 @@ def grid_search_with_group_cv(data, y, groups, param_grid, cv_folds=5,
     
     return best_params, cv_results
 
-def evaluate_threshold_performance(y_true, y_pred, threshold=0.04):
-    """
-    评估4%阈值的分类性能
-    
-    Parameters:
-    -----------
-    y_true, y_pred : array-like
-        真实值和预测值
-    threshold : float
-        分类阈值
-        
-    Returns:
-    --------
-    metrics : dict
-        分类性能指标
-    """
-    
-    # 转换为二分类
-    y_true_binary = (y_true >= threshold).astype(int)
-    y_pred_binary = (y_pred >= threshold).astype(int)
-    
-    # 计算混淆矩阵元素
-    TP = ((y_true_binary == 1) & (y_pred_binary == 1)).sum()
-    TN = ((y_true_binary == 0) & (y_pred_binary == 0)).sum()
-    FP = ((y_true_binary == 0) & (y_pred_binary == 1)).sum()
-    FN = ((y_true_binary == 1) & (y_pred_binary == 0)).sum()
-    
-    # 计算指标
-    sensitivity = TP / (TP + FN) if (TP + FN) > 0 else 0
-    specificity = TN / (TN + FP) if (TN + FP) > 0 else 0
-    precision = TP / (TP + FP) if (TP + FP) > 0 else 0
-    f1_score = 2 * (precision * sensitivity) / (precision + sensitivity) if (precision + sensitivity) > 0 else 0
-    
-    # 计算AUC
-    try:
-        auc = roc_auc_score(y_true_binary, y_pred)
-    except:
-        auc = 0.5
-    
-    return {
-        'threshold': threshold,
-        'sensitivity': sensitivity,
-        'specificity': specificity,
-        'precision': precision,
-        'f1_score': f1_score,
-        'auc': auc,
-        'TP': TP, 'TN': TN, 'FP': FP, 'FN': FN
-    }
-
-def create_bmi_risk_stratification(data, model, output_dir):
-    """
-    创建BMI分组风险分层和最佳时点分析
-    """
-    
-    # BMI分组 (按照题目建议的分组)
-    bmi_raw = data['BMI_标准化'] * data['BMI_标准化'].std() + data['BMI_标准化'].mean()
-    
-    bmi_bins = [20, 28, 32, 36, 40, np.inf]
-    bmi_labels = ['[20,28)', '[28,32)', '[32,36)', '[36,40)', '≥40']
-    bmi_groups = pd.cut(bmi_raw, bins=bmi_bins, labels=bmi_labels, right=False)
-    
-    # 孕周范围
-    gest_raw = data['孕周_标准化'] * data['孕周_标准化'].std() + data['孕周_标准化'].mean()
-    
-    stratification_results = []
-    
-    for group_name in bmi_labels:
-        group_mask = (bmi_groups == group_name)
-        if group_mask.sum() < 10:  # 样本量太小跳过
-            continue
-        
-        group_data = data[group_mask].copy()
-        group_gest = gest_raw[group_mask]
-        group_y = data.loc[group_mask, 'Y染色体浓度']
-        
-        # 预测该组的Y染色体浓度
-        # 创建特征矩阵 (使用最优模型的配置)
-        try:
-            # 这里需要根据实际的最优模型配置来创建特征
-            # 为简化，先使用基本配置
-            X_group = create_interaction_features(group_data, df_gest=3, df_bmi=3)
-            if '年龄_标准化' in group_data.columns:
-                X_group = pd.concat([X_group, group_data[['年龄_标准化']]], axis=1)
-            
-            y_pred_group = model.predict(sm.add_constant(X_group))
-            
-            # 找到最早达标孕周
-            达标mask = (y_pred_group >= 0.04)
-            if 达标mask.sum() > 0:
-                最早达标孕周 = group_gest[达标mask].min()
-                达标比例 = 达标mask.mean()
-            else:
-                最早达标孕周 = np.nan
-                达标比例 = 0.0
-            
-            stratification_results.append({
-                'BMI组': group_name,
-                '样本数': group_mask.sum(),
-                'BMI均值': bmi_raw[group_mask].mean(),
-                '孕周范围': f"{group_gest.min():.1f}-{group_gest.max():.1f}",
-                '最早达标孕周': 最早达标孕周,
-                '达标比例': 达标比例,
-                'Y浓度均值': group_y.mean(),
-                'Y浓度标准差': group_y.std()
-            })
-            
-        except Exception as e:
-            print(f"BMI组 {group_name} 分析失败: {e}")
-            continue
-    
-    # 保存结果
-    stratification_df = pd.DataFrame(stratification_results)
-    stratification_df.to_csv(f'{output_dir}/bmi_risk_stratification.csv', 
-                           index=False, encoding='utf-8-sig')
-    
-    print("BMI风险分层分析完成")
-    return stratification_df
+## 已移除与第二/三问相关的阈值分类与BMI分层分析，以聚焦第一问
 
 def fractional_logit_improved_modeling():
     """
@@ -452,6 +331,12 @@ def fractional_logit_improved_modeling():
     llf = final_model.llf
     aic_corrected = -2 * llf + 2 * k
     bic_corrected = -2 * llf + k * np.log(n)
+    # McFadden Pseudo R²
+    ll_null = sm.GLM(y, sm.add_constant(np.ones(len(y))), family=sm.families.Binomial()).fit().llf
+    pseudo_r2 = 1 - (llf / ll_null)
+    # 规模信息
+    n_features = X_final.shape[1]
+    n_params = k
     
     print(f"回归性能:")
     print(f"  MAE: {mae_final:.6f}")
@@ -460,30 +345,17 @@ def fractional_logit_improved_modeling():
     print(f"  AIC: {aic_corrected:.2f}")
     print(f"  BIC: {bic_corrected:.2f}")
     print(f"  Log-Likelihood: {llf:.2f}")
+    print(f"  Pseudo R² (McFadden): {pseudo_r2:.4f}")
+    print(f"  特征数(不含截距): {n_features}")
+    print(f"  参数数量: {n_params}")
     
-    # 4%阈值分类评估
-    threshold_metrics = evaluate_threshold_performance(y, y_pred_final, threshold=0.04)
-    
-    print(f"\n4%阈值分类性能:")
-    print(f"  敏感度: {threshold_metrics['sensitivity']:.3f}")
-    print(f"  特异度: {threshold_metrics['specificity']:.3f}")
-    print(f"  精确度: {threshold_metrics['precision']:.3f}")
-    print(f"  F1分数: {threshold_metrics['f1_score']:.3f}")
-    print(f"  AUC: {threshold_metrics['auc']:.3f}")
-    
-    # BMI风险分层分析
-    print("\n6. BMI风险分层分析...")
-    model_data_with_final = model_data.copy()
-    stratification_df = create_bmi_risk_stratification(model_data_with_final, final_model, output_dir)
-    
-    print("\nBMI分组最佳NIPT时点:")
-    if not stratification_df.empty:
-        for _, row in stratification_df.iterrows():
-            if not np.isnan(row['最早达标孕周']):
-                print(f"  {row['BMI组']}: {row['最早达标孕周']:.1f}周 (达标率{row['达标比例']:.1%})")
-            else:
-                print(f"  {row['BMI组']}: 无明确达标时点")
-    
+    # 基于CV结果找出最优参数对应的CV指标并打印
+    best_cv = min(cv_results, key=lambda x: x['rmse_mean'])
+    print("\n6. 分组交叉验证（最优参数）摘要:")
+    print(f"  CV MAE: {best_cv['mae_mean']:.6f} ± {best_cv['mae_std']:.6f}")
+    print(f"  CV RMSE: {best_cv['rmse_mean']:.6f} ± {best_cv['rmse_std']:.6f}")
+    print(f"  CV R²: {best_cv['r2_mean']:.4f} ± {best_cv['r2_std']:.4f}")
+
     # 保存结果
     print(f"\n7. 保存分析结果...")
     
@@ -491,34 +363,37 @@ def fractional_logit_improved_modeling():
     cv_results_df = pd.DataFrame(cv_results)
     cv_results_df.to_csv(f'{output_dir}/grid_search_results.csv', index=False, encoding='utf-8-sig')
     
-    # 保存最终模型摘要
+    # 保存最终模型摘要（含训练与最优CV指标）
     with open(f'{output_dir}/improved_model_summary.txt', 'w', encoding='utf-8') as f:
-        f.write("改进的分数logit回归模型分析结果\\n")
-        f.write("=" * 70 + "\\n\\n")
-        f.write(f"最优参数配置:\\n")
+        f.write("改进的分数logit回归模型分析结果\n")
+        f.write("=" * 70 + "\n\n")
+        f.write("最优参数配置:\n")
         for key, value in best_params.items():
-            f.write(f"  {key}: {value}\\n")
-        f.write(f"\\n回归性能指标:\\n")
-        f.write(f"  MAE: {mae_final:.6f}\\n")
-        f.write(f"  RMSE: {rmse_final:.6f}\\n")
-        f.write(f"  R²: {r2_final:.4f}\\n")
-        f.write(f"  AIC: {aic_corrected:.2f}\\n")
-        f.write(f"  BIC: {bic_corrected:.2f}\\n")
-        f.write(f"\\n4%阈值分类性能:\\n")
-        f.write(f"  敏感度: {threshold_metrics['sensitivity']:.3f}\\n")
-        f.write(f"  特异度: {threshold_metrics['specificity']:.3f}\\n")
-        f.write(f"  AUC: {threshold_metrics['auc']:.3f}\\n")
-        f.write(f"\\n关键改进:\\n")
-        f.write("1. 使用低自由度样条交互 (df=3-4) 避免过拟合\\n")
-        f.write("2. L2正则化控制模型复杂度\\n")
-        f.write("3. 分组交叉验证确保真实泛化性能\\n")
-        f.write("4. 在原始比例标度上进行统一评估\\n")
-        f.write("5. 提供4%阈值的分类性能评估\\n")
+            f.write(f"  {key}: {value}\n")
+        f.write("\n回归性能指标:\n")
+        f.write(f"  MAE: {mae_final:.6f}\n")
+        f.write(f"  RMSE: {rmse_final:.6f}\n")
+        f.write(f"  R²: {r2_final:.4f}\n")
+        f.write(f"  AIC: {aic_corrected:.2f}\n")
+        f.write(f"  BIC: {bic_corrected:.2f}\n")
+        f.write(f"  Pseudo R² (McFadden): {pseudo_r2:.4f}\n")
+        f.write(f"  特征数(不含截距): {n_features}\n")
+        f.write(f"  参数数量: {n_params}\n")
+        f.write("\n分组交叉验证（最优参数）:\n")
+        f.write(f"  CV MAE: {best_cv['mae_mean']:.6f} ± {best_cv['mae_std']:.6f}\n")
+        f.write(f"  CV RMSE: {best_cv['rmse_mean']:.6f} ± {best_cv['rmse_std']:.6f}\n")
+        f.write(f"  CV R²: {best_cv['r2_mean']:.4f} ± {best_cv['r2_std']:.4f}\n")
+        f.write("\n关键改进:\n")
+        f.write("1. 使用低自由度样条交互 (df=3-4) 避免过拟合\n")
+        f.write("2. L2正则化控制模型复杂度\n")
+        f.write("3. 分组交叉验证确保真实泛化性能\n")
+        f.write("4. 在原始比例标度上进行统一评估\n")
+        
     
     print(f"分析完成! 结果已保存至 '{output_dir}' 目录")
     print("=" * 70)
     
-    return final_model, best_params, cv_results_df, stratification_df
+    return final_model, best_params, cv_results_df
 
 if __name__ == "__main__":
-    final_model, best_params, cv_results, stratification = fractional_logit_improved_modeling()
+    final_model, best_params, cv_results = fractional_logit_improved_modeling()
