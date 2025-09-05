@@ -14,6 +14,7 @@ import sys
 import itertools
 from matplotlib.colors import LinearSegmentedColormap
 import statsmodels.api as sm
+from statsmodels.gam.api import GLMGam, BSplines
 from scipy import stats
 from io import StringIO
 import contextlib
@@ -541,5 +542,344 @@ def cross_validate_all_models(X, y, feature_names, k=5, random_state=42):
         df[col] = df[col].map(lambda v: f"{v:.6f}" if pd.notnull(v) else "")
     return df
 
+# ===============
+# 路线B：Fractional-Logit（Binomial + logit）GAM（statsmodels GLMGam + BSplines）
+# ===============
+
+def gam_fractional_logit_modeling():
+    """
+    使用 statsmodels 的 GLMGam（Binomial 家族 + logit 链接）对比例型响应进行加性建模。
+    - 使用 BSplines 作为平滑器
+    - 在比例刻度上评估（MAE/RMSE/R²）
+    - 生成偏依赖图与诊断图
+    - 使用 K 折交叉验证评估泛化性能
+    输出目录：gam_enhanced_results_glm
+    """
+    output_dir = 'gam_enhanced_results_glm'
+    if not os.path.exists(output_dir):
+        os.makedirs(output_dir)
+
+    # 1) 读取数据
+    try:
+        df = pd.read_csv('processed_data.csv')
+    except FileNotFoundError:
+        return
+
+    # 目标：比例，裁剪到 (0,1)
+    if 'Y染色体浓度' not in df.columns:
+        return
+    eps = 1e-6
+    y = df['Y染色体浓度'].clip(eps, 1 - eps)
+
+    # 核心特征（仅使用5个关键临床变量）
+    candidate_features = [
+        '孕周_标准化', 'BMI_标准化', '年龄_标准化',
+        '怀孕次数_标准化', '生产次数_标准化'
+    ]
+    features = [c for c in candidate_features if c in df.columns]
+    if len(features) == 0:
+        return
+
+    X = df[features].copy()
+
+    # 清理 NaN/Inf
+    mask = np.isfinite(y) & np.isfinite(X).all(axis=1)
+    y = y[mask]
+    X = X[mask]
+
+    # 2) 配置 BSplines（统一自由度设置，简化模型复杂度）
+    df_value = 6  # 统一设置为6个自由度，平衡拟合能力与泛化性能
+    df_list = [df_value] * X.shape[1]
+    bs = BSplines(X, df=df_list, degree=[3] * X.shape[1])
+
+    # 3) 拟合 Fractional-Logit GAM
+    model = GLMGam(y, smoother=bs, family=sm.families.Binomial())
+    res = model.fit()
+
+    # 4) 训练内评估（比例刻度）
+    y_hat = res.predict(exog=None, exog_smooth=X, transform=True)
+    mae = float(np.mean(np.abs(y - y_hat)))
+    rmse = float(np.sqrt(np.mean((y - y_hat) ** 2)))
+    ss_res = float(np.sum((y - y_hat) ** 2))
+    ss_tot = float(np.sum((y - y.mean()) ** 2))
+    r2 = float(1 - ss_res / ss_tot) if ss_tot > 0 else np.nan
+
+    # 伪R²（解释偏差）
+    try:
+        # 若 GLMGamResults 未提供 null_deviance，则用截距-only 的 GLM 估计
+        null_mod = sm.GLM(y, np.ones((len(y), 1)), family=sm.families.Binomial()).fit()
+        dev_null = float(null_mod.deviance)
+        dev_model = float(res.deviance)
+        pseudo_r2 = float(1 - dev_model / dev_null) if dev_null > 0 else np.nan
+    except Exception:
+        pseudo_r2 = np.nan
+
+    # 5) 输出摘要
+    try:
+        summary_str = res.summary().as_text()
+    except Exception:
+        # 某些环境下 as_text 可能不可用，退回 str
+        summary_str = str(res.summary())
+
+    with open(f'{output_dir}/best_model_summary_glm.txt', 'w', encoding='utf-8') as f:
+        f.write("Fractional-Logit GAM（Binomial + logit）模型摘要\n")
+        f.write("=" * 70 + "\n")
+        f.write(summary_str + "\n\n")
+        f.write("训练集评估（比例刻度）:\n")
+        f.write(f"MAE = {mae:.6f}\nRMSE = {rmse:.6f}\nR² = {r2:.6f}\n")
+        f.write(f"解释偏差（Pseudo R² by deviance）= {pseudo_r2:.6f}\n")
+
+    # 6) 偏依赖图（逐变量，其他变量固定在中位数）
+    create_partial_dependence_plots_glm(res, X, output_dir)
+
+    # 7) 诊断图与诊断统计
+    perform_model_diagnostics_glm(y, y_hat, output_dir)
+
+    # 8) 交叉验证（比例刻度上评估）
+    cv_df = cross_validate_glmgam(X, y, df_list=df_list, degree=[3] * X.shape[1], k=5, random_state=42)
+    cv_df.to_csv(f'{output_dir}/cv_results_glm.csv', index=False, encoding='utf-8-sig')
+    
+    # 9) 输出详细模型信息
+    export_model_details(res, X, y, y_hat, mae, rmse, r2, pseudo_r2, cv_df, output_dir)
+
+
+def create_partial_dependence_plots_glm(res, X, output_dir):
+    """
+    为 GLMGam 模型创建偏依赖图：
+    - 对每个特征 i，构造该特征的一维网格，其余特征固定为中位数
+    - 调用 res.predict 计算预测均值
+    - 注意：此处不绘制置信区间（GLMGam 的预测方差获取较复杂）
+    """
+    feature_names = X.columns.tolist()
+    n_features = len(feature_names)
+    rows = int(np.ceil(n_features / 2))
+    cols = 2 if n_features > 1 else 1
+    fig = plt.figure(figsize=(16, rows * 6))
+
+    # 基准点：中位数
+    med = X.median(axis=0)
+
+    for i, name in enumerate(feature_names, start=1):
+        ax = fig.add_subplot(rows, cols, i)
+        grid = np.linspace(X[name].min(), X[name].max(), 120)
+        X_grid = pd.DataFrame(np.tile(med.values, (len(grid), 1)), columns=feature_names)
+        X_grid[name] = grid
+        # 预测
+        y_grid = res.predict(exog=None, exog_smooth=X_grid, transform=True)
+        ax.plot(grid, y_grid, color='C0')
+        ax.set_title(f'{name} 的偏效应（比例刻度）', fontsize=14)
+        ax.set_xlabel(name, fontsize=12)
+        ax.set_ylabel('预测的 Y染色体浓度', fontsize=12)
+        ax.grid(True, linestyle='--', alpha=0.7)
+
+    plt.tight_layout()
+    plt.savefig(f'{output_dir}/partial_dependence_plots_glm.png', dpi=300, bbox_inches='tight')
+    plt.close()
+
+
+def perform_model_diagnostics_glm(y_true, y_pred, output_dir):
+    """GLMGam 的基本诊断：残差 vs 拟合值 + QQ 图 + 诊断统计输出"""
+    residuals = y_true - y_pred
+
+    fig, axes = plt.subplots(1, 2, figsize=(16, 6))
+    # 残差 vs 拟合值
+    axes[0].scatter(y_pred, residuals, alpha=0.5)
+    axes[0].axhline(y=0, color='r', linestyle='-')
+    try:
+        from statsmodels.nonparametric.smoothers_lowess import lowess
+        smooth = lowess(residuals, y_pred, frac=0.3)
+        axes[0].plot(smooth[:, 0], smooth[:, 1], color='red', lw=2)
+    except Exception:
+        pass
+    axes[0].set_title('残差 vs. 拟合值图（GLMGam）', fontsize=14)
+    axes[0].set_xlabel('拟合值（比例）', fontsize=12)
+    axes[0].set_ylabel('残差', fontsize=12)
+    axes[0].grid(True, linestyle='--', alpha=0.7)
+    # QQ 图
+    stats.probplot(residuals, dist="norm", plot=axes[1])
+    axes[1].set_title('残差正态Q-Q图（GLMGam）', fontsize=14)
+    axes[1].grid(True, linestyle='--', alpha=0.7)
+    plt.tight_layout()
+    plt.savefig(f'{output_dir}/model_diagnostics_glm.png', dpi=300, bbox_inches='tight')
+    plt.close()
+
+    diag_stats = pd.DataFrame({
+        '指标': ['均方误差(MSE)', '平均绝对误差(MAE)', '残差均值', '残差标准差', '残差中位数'],
+        '值': [
+            float(np.mean(residuals ** 2)),
+            float(np.mean(np.abs(residuals))),
+            float(np.mean(residuals)),
+            float(np.std(residuals)),
+            float(np.median(residuals))
+        ]
+    })
+    diag_stats.to_csv(f'{output_dir}/diagnostic_statistics_glm.csv', index=False, encoding='utf-8-sig')
+
+
+def export_model_details(res, X, y, y_hat, mae, rmse, r2, pseudo_r2, cv_df, output_dir):
+    """
+    输出详细的模型信息到CSV文件，包括系数、统计量和性能指标
+    """
+    # 1) 模型基本信息
+    model_info = {
+        '模型类型': 'Fractional-Logit GAM',
+        '分布家族': 'Binomial',
+        '链接函数': 'Logit',
+        '样本数': len(y),
+        '特征数': X.shape[1],
+        '模型自由度': res.df_model,
+        '残差自由度': res.df_resid,
+        '迭代次数': getattr(res, 'n_iter', 'N/A'),
+        '收敛状态': '成功' if res.converged else '失败'
+    }
+    
+    # 2) 性能指标
+    performance_metrics = {
+        '训练集_MAE': f'{mae:.6f}',
+        '训练集_RMSE': f'{rmse:.6f}',
+        '训练集_R²': f'{r2:.6f}',
+        '解释偏差_伪R²': f'{pseudo_r2:.6f}',
+        '对数似然': f'{res.llf:.4f}',
+        'AIC': f'{res.aic:.4f}',
+        'BIC': f'{res.bic:.4f}',
+        '偏差': f'{res.deviance:.4f}',
+        'Pearson_卡方': f'{res.pearson_chi2:.4f}'
+    }
+    
+    # 3) 交叉验证结果
+    cv_metrics = {
+        'CV_MAE_均值': cv_df['MAE_mean'].iloc[0],
+        'CV_MAE_标准差': cv_df['MAE_std'].iloc[0],
+        'CV_RMSE_均值': cv_df['RMSE_mean'].iloc[0],
+        'CV_RMSE_标准差': cv_df['RMSE_std'].iloc[0],
+        'CV_R²_均值': cv_df['R2_mean'].iloc[0],
+        'CV_R²_标准差': cv_df['R2_std'].iloc[0]
+    }
+    
+    # 4) 特征系数与显著性
+    feature_names = X.columns.tolist()
+    coef_data = []
+    
+    # 获取系数和统计量
+    for i, coef_name in enumerate(res.params.index):
+        coef_value = res.params.iloc[i]
+        std_err = res.bse.iloc[i] if hasattr(res, 'bse') else np.nan
+        z_value = res.tvalues.iloc[i] if hasattr(res, 'tvalues') else np.nan
+        p_value = res.pvalues.iloc[i] if hasattr(res, 'pvalues') else np.nan
+        
+        # 显著性标识
+        if p_value < 0.001:
+            significance = '***'
+        elif p_value < 0.01:
+            significance = '**'
+        elif p_value < 0.05:
+            significance = '*'
+        else:
+            significance = 'ns'
+            
+        coef_data.append({
+            '系数名称': coef_name,
+            '系数值': f'{coef_value:.6f}',
+            '标准误差': f'{std_err:.6f}' if not np.isnan(std_err) else 'N/A',
+            'Z统计量': f'{z_value:.3f}' if not np.isnan(z_value) else 'N/A',
+            'P值': f'{p_value:.6f}' if not np.isnan(p_value) else 'N/A',
+            '显著性': significance
+        })
+    
+    # 5) 保存到文件
+    # 模型信息
+    model_info_df = pd.DataFrame([model_info])
+    model_info_df.to_csv(f'{output_dir}/model_basic_info.csv', index=False, encoding='utf-8-sig')
+    
+    # 性能指标
+    performance_df = pd.DataFrame([{**performance_metrics, **cv_metrics}])
+    performance_df.to_csv(f'{output_dir}/model_performance.csv', index=False, encoding='utf-8-sig')
+    
+    # 系数表
+    coef_df = pd.DataFrame(coef_data)
+    coef_df.to_csv(f'{output_dir}/model_coefficients.csv', index=False, encoding='utf-8-sig')
+    
+    # 特征重要性汇总（按特征分组统计）
+    feature_summary = []
+    for feat in feature_names:
+        # 找到该特征对应的所有系数项（样条基函数）
+        feat_coeffs = [row for row in coef_data if feat in row['系数名称']]
+        n_significant = sum(1 for row in feat_coeffs if row['显著性'] != 'ns')
+        
+        feature_summary.append({
+            '特征名称': feat,
+            '系数项数': len(feat_coeffs),
+            '显著项数': n_significant,
+            '显著比例': f'{n_significant/len(feat_coeffs):.2%}' if feat_coeffs else '0%'
+        })
+    
+    feature_summary_df = pd.DataFrame(feature_summary)
+    feature_summary_df.to_csv(f'{output_dir}/feature_importance_summary.csv', index=False, encoding='utf-8-sig')
+
+
+def cross_validate_glmgam(X, y, df_list, degree, k=5, random_state=42):
+    """
+    对 GLMGam 进行 K 折交叉验证。
+    - 每一折：用训练集构造 BSplines（避免信息泄露），拟合 GLMGam；在测试集上评估 MAE/RMSE/R²（比例刻度）。
+    - 返回单模型的汇总 DataFrame（与现有风格一致）。
+    """
+    n = len(y)
+    idx = np.arange(n)
+    rng = np.random.RandomState(random_state)
+    rng.shuffle(idx)
+
+    fold_sizes = np.full(k, n // k, dtype=int)
+    fold_sizes[: n % k] += 1
+    current = 0
+
+    maes, rmses, r2s = [], [], []
+
+    for fold in range(k):
+        start, stop = current, current + fold_sizes[fold]
+        test_idx = idx[start:stop]
+        train_idx = np.concatenate([idx[:start], idx[stop:]])
+        current = stop
+
+        X_train = X.iloc[train_idx]
+        y_train = y.iloc[train_idx]
+        X_test = X.iloc[test_idx]
+        y_test = y.iloc[test_idx]
+
+        # 为训练集构造样条并拟合
+        bs_train = BSplines(X_train, df=df_list, degree=degree)
+        model = GLMGam(y_train, smoother=bs_train, family=sm.families.Binomial())
+        try:
+            res = model.fit()
+            # 将测试集数值裁剪到训练集范围内，避免样条外推报错
+            train_min = X_train.min(axis=0)
+            train_max = X_train.max(axis=0)
+            X_test_clip = X_test.clip(lower=train_min, upper=train_max, axis=1)
+            preds = res.predict(exog=None, exog_smooth=X_test_clip, transform=True)
+            mae = float(np.mean(np.abs(y_test - preds)))
+            rmse = float(np.sqrt(np.mean((y_test - preds) ** 2)))
+            ss_res = float(np.sum((y_test - preds) ** 2))
+            ss_tot = float(np.sum((y_test - y_test.mean()) ** 2))
+            r2 = float(1 - ss_res / ss_tot) if ss_tot > 0 else np.nan
+        except Exception as e:
+            mae, rmse, r2 = np.nan, np.nan, np.nan
+        maes.append(mae)
+        rmses.append(rmse)
+        r2s.append(r2)
+
+    df_result = pd.DataFrame([{
+        '模型': 'GLMGam_Binomial_logit',
+        'MAE_mean': np.nanmean(maes),
+        'MAE_std': np.nanstd(maes),
+        'RMSE_mean': np.nanmean(rmses),
+        'RMSE_std': np.nanstd(rmses),
+        'R2_mean': np.nanmean(r2s),
+        'R2_std': np.nanstd(r2s)
+    }])
+    for col in ['MAE_mean', 'MAE_std', 'RMSE_mean', 'RMSE_std', 'R2_mean', 'R2_std']:
+        df_result[col] = df_result[col].map(lambda v: f"{v:.6f}" if pd.notnull(v) else "")
+    return df_result
+
+
 if __name__ == "__main__":
-    gam_enhanced_modeling()
+    # 默认执行路线B（GLMGam），保留原pyGAM函数不动，避免大幅改动
+    gam_fractional_logit_modeling()

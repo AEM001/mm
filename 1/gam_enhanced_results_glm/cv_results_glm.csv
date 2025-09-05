@@ -1,0 +1,2 @@
+﻿模型,MAE_mean,MAE_std,RMSE_mean,RMSE_std,R2_mean,R2_std
+GLMGam_Binomial_logit,0.025666,0.001674,0.032218,0.002457,0.080071,0.044499
