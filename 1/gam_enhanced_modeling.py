@@ -83,6 +83,10 @@ def gam_enhanced_modeling():
     # 模型5: BMI×年龄交互 (在M2基础上添加交互项)
     print("  - 正在训练模型5 (M2 + BMI×年龄交互)...")
     models['M5_interact_BA'] = LinearGAM(s(0) + s(1) + s(2) + l(3) + l(4) + te(1, 2)).fit(X, y)
+    
+    # 模型6: BMI+孕周主效应+交互项 (专门测试BMI、孕周及其交互)
+    print("  - 正在训练模型6 (BMI + 孕周 + BMI×孕周交互)...")
+    models['M6_WB_focused'] = LinearGAM(s(0) + s(1) + te(0, 1)).fit(X[['孕周_标准化', 'BMI_标准化']], y)
 
     # 4. 比较模型性能并选择最优模型
     print("\n模型性能比较:")
@@ -98,8 +102,6 @@ def gam_enhanced_modeling():
             '模型': name,
             '伪R²': f"{model.statistics_['pseudo_r2']['explained_deviance']:.4f}",
             'AICc': f"{model.statistics_['AICc']:.2f}",
-            'GCV': f"{model.statistics_['GCV']:.4f}",
-            'EDoF': f"{model.statistics_['edof']:.2f}",
             '显著项数': f"{significant_terms}/{len(pvals_non_intercept)}"
         })
     
@@ -120,9 +122,11 @@ def gam_enhanced_modeling():
     summary_str = _buf.getvalue()
     print(summary_str)
     
-    # 所有模型现在都使用全部特征（除了M1）
+    # 根据最优模型选择对应的特征
     if best_model_name == 'M1_baseline':
         best_model_features = feature_names[:3]  # 只有前三个特征：孕周、BMI、年龄
+    elif best_model_name == 'M6_WB_focused':
+        best_model_features = ['孕周_标准化', 'BMI_标准化']  # M6模型只用孕周和BMI
     else:
         best_model_features = feature_names  # 全部五个特征
     
@@ -467,6 +471,10 @@ def cross_validate_all_models(X, y, feature_names, k=5, random_state=42):
         'M5_interact_BA': {
             'builder': lambda: LinearGAM(s(0) + s(1) + s(2) + l(3) + l(4) + te(1, 2)),
             'features': feature_names
+        },
+        'M6_WB_focused': {
+            'builder': lambda: LinearGAM(s(0) + s(1) + te(0, 1)),
+            'features': ['孕周_标准化', 'BMI_标准化']
         }
     }
 

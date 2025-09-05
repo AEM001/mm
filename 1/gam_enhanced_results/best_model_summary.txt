@@ -1,33 +1,31 @@
-最优GAM模型分析结果: M4_interact_WA
+最优GAM模型分析结果: M6_WB_focused
 ======================================================================
 模型比较:
-            模型    伪R²       AICc    GCV  EDoF 显著项数
-   M1_baseline 0.2220 1044488.92 0.0010 35.09  3/3
-    M2_add_C_D 0.2242 1043197.66 0.0010 37.06  3/5
-M3_interact_WB 0.2347 1041456.35 0.0010 44.46  4/6
-M4_interact_WA 0.2386 1041369.30 0.0010 46.92  4/6
-M5_interact_BA 0.2366 1048157.49 0.0010 42.59  4/6
+            模型    伪R²       AICc 显著项数
+   M1_baseline 0.2220 1044488.92  3/3
+    M2_add_C_D 0.2242 1043197.66  3/5
+M3_interact_WB 0.2347 1041456.35  4/6
+M4_interact_WA 0.2386 1041369.30  4/6
+M5_interact_BA 0.2366 1048157.49  4/6
+ M6_WB_focused 0.1749  993958.20  3/3
 
 ======================================================================
-最优模型 (M4_interact_WA) 摘要:
+最优模型 (M6_WB_focused) 摘要:
 LinearGAM                                                                                                 
 =============================================== ==========================================================
-Distribution:                        NormalDist Effective DoF:                                     46.9183
-Link Function:                     IdentityLink Log Likelihood:                               -520634.2836
-Number of Samples:                         1006 AIC:                                          1041364.4039
-                                                AICc:                                         1041369.3023
+Distribution:                        NormalDist Effective DoF:                                     30.3997
+Link Function:                     IdentityLink Log Likelihood:                               -496946.6565
+Number of Samples:                         1006 AIC:                                           993956.1124
+                                                AICc:                                          993958.2022
                                                 GCV:                                                 0.001
-                                                Scale:                                              0.0009
-                                                Pseudo R-Squared:                                   0.2386
+                                                Scale:                                               0.001
+                                                Pseudo R-Squared:                                   0.1749
 ==========================================================================================================
 Feature Function                  Lambda               Rank         EDoF         P > x        Sig. Code   
 ================================= ==================== ============ ============ ============ ============
-s(0)                              [0.6]                20           13.3         1.37e-08     ***         
-s(1)                              [0.6]                20           10.2         2.25e-13     ***         
-s(2)                              [0.6]                20           12.1         1.09e-08     ***         
-l(3)                              [0.6]                1            0.9          7.51e-01                 
-l(4)                              [0.6]                1            0.9          3.18e-01                 
-te(0, 2)                          [0.6 0.6]            100          9.4          1.57e-11     ***         
+s(0)                              [0.6]                20           13.1         6.12e-09     ***         
+s(1)                              [0.6]                20           10.4         2.68e-06     ***         
+te(0, 1)                          [0.6 0.6]            100          6.9          4.67e-10     ***         
 intercept                                              1            0.0          1.11e-16     ***         
 ==========================================================================================================
 Significance codes:  0 '***' 0.001 '**' 0.01 '*' 0.05 '.' 0.1 ' ' 1
@@ -40,6 +38,6 @@ WARNING: p-values calculated in this manner behave correctly for un-penalized mo
          are typically lower than they should be, meaning that the tests reject the null too readily.
 
 整体模型显著性近似F检验:
-F(47, 959) = 5.436, p = 3.094e-26
+F(31, 975) = 5.864, p = 5.929e-21
 
 注: GAM 平滑项的 p 值与上述 F 检验均为近似量，且 pyGAM 在估计平滑参数时 p 值可能偏小，请谨慎解读。
