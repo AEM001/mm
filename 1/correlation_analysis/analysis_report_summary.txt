@@ -1,0 +1,22 @@
+
+相关性分析报告摘要
+==================================================
+
+数据概况:
+- 分析样本数: 1006
+- 分析变量数: 5
+
+主要发现:
+- 最强相关变量: BMI (r=-0.151, 很弱相关)
+- 最弱相关变量: 生产次数 (r=-0.005, 很弱相关)
+- 显著相关变量数: 3/5
+
+显著性说明:
+*** p<0.001, ** p<0.01, * p<0.05
+
+输出文件:
+- spearman_correlation_results.csv: Spearman相关系数表
+- correlation_scatter_plots.png: 散点图矩阵
+- correlation_heatmap.png: 相关性热力图
+- full_correlation_matrix.csv: 完整相关性矩阵
+- descriptive_statistics.csv: 描述性统计
