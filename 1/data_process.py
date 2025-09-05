@@ -177,32 +177,24 @@ def process_data():
     
     print("数据标准化完成")
     
-    # 2.4 对Y染色体浓度进行logit变换
-    print("2.4 对Y染色体浓度进行logit变换...")
+    # 2.4 对Y染色体浓度进行适当的比例数据处理
+    print("2.4 对Y染色体浓度进行比例数据处理...")
     y_conc_col = df.columns[21]  # V列 - Y染色体浓度
     y_conc_data = pd.to_numeric(df[y_conc_col], errors='coerce')
     
-    # 确保数据在(0,1)区间内，如果不是则进行调整
-    # 先检查数据范围
+    # 检查数据范围
     y_min, y_max = y_conc_data.min(), y_conc_data.max()
     print(f"  Y染色体浓度原始范围: [{y_min:.6f}, {y_max:.6f}]")
     
-    # 如果数据不在(0,1)区间，进行归一化
-    if y_min <= 0 or y_max >= 1:
-        # 使用min-max归一化到(epsilon, 1-epsilon)区间，避免logit函数的边界问题
-        epsilon = 1e-6
-        y_normalized = (y_conc_data - y_min) / (y_max - y_min)
-        y_normalized = y_normalized * (1 - 2*epsilon) + epsilon
-        print(f"  数据已归一化到({epsilon}, {1-epsilon})区间")
-    else:
-        y_normalized = y_conc_data
-        # 处理边界值，避免logit函数的数值问题
-        epsilon = 1e-6
-        y_normalized = np.clip(y_normalized, epsilon, 1-epsilon)
+    # 数据已经是比例形式，只需进行数值裁剪以避免边界问题
+    # 确保数据在(0,1)区间内，用于后续的分数logit建模
+    epsilon = 1e-6
+    y_processed = np.clip(y_conc_data, epsilon, 1-epsilon)
     
-    # 应用logit变换，直接覆盖原列以保持名称一致
-    df[y_conc_col] = logit(y_normalized)
-    print(f"  logit变换完成，变换后范围: [{df[y_conc_col].min():.6f}, {df[y_conc_col].max():.6f}]")
+    # 保持原始比例含义，不进行min-max归一化和logit变换
+    df[y_conc_col] = y_processed
+    print(f"  比例数据处理完成，处理后范围: [{df[y_conc_col].min():.6f}, {df[y_conc_col].max():.6f}]")
+    print(f"  保持了原始比例含义，4%阈值 = {0.04}")
     
     # 3. 删除冗余和无关的数据列
     print("\n3. 删除冗余和无关的数据列...")
@@ -210,7 +202,7 @@ def process_data():
     # 保留的列 - 只保留与问题一相关的核心变量
     keep_columns = [
         df.columns[1],  # 孕妇代码 (用于标识)
-        df.columns[21], # Y染色体浓度 (经过logit变换的目标变量V列)
+        df.columns[21], # Y染色体浓度 (比例数据，已进行边界裁剪处理)
         '孕周_标准化',     # 核心自变量
         'BMI_标准化',     # 核心自变量  
         '年龄_标准化',     # 核心自变量
@@ -258,7 +250,7 @@ def process_data():
     print("- 孕周_小数")
     print("- 唯一比对读段比例")
     print("\n变换的变量:")
-    print("- Y染色体浓度 (已进行logit变换，保持原列名)") 
+    print("- Y染色体浓度 (已进行边界裁剪处理，保持原始比例含义)")
     
     standardized_vars = [col for col in df.columns if '_标准化' in col or '_重新标准化' in col]
     print(f"\n标准化变量数量: {len(standardized_vars)}")
