@@ -15,6 +15,8 @@ import itertools
 from matplotlib.colors import LinearSegmentedColormap
 import statsmodels.api as sm
 from scipy import stats
+from io import StringIO
+import contextlib
 
 # 确保可以导入项目根目录的模块
 sys.path.append('/Users/Mac/Downloads/mm')
@@ -48,6 +50,11 @@ def gam_enhanced_modeling():
     y = data['Y染色体浓度'].copy()  # 目标变量
     X = data[['孕周_标准化', 'BMI_标准化', '年龄_标准化', '怀孕次数_标准化', '生产次数_标准化']].copy()
     
+    # 清理数据中的NaN和Inf值
+    mask = np.isfinite(y) & np.isfinite(X).all(axis=1)
+    y = y[mask]
+    X = X[mask]
+    
     # 保留原始列名，不再重命名为W, B, A等缩写
     feature_names = X.columns.tolist()
     
@@ -65,17 +72,17 @@ def gam_enhanced_modeling():
     print("  - 正在训练模型2 (加入怀孕次数和生产次数为线性项)...")
     models['M2_add_C_D'] = LinearGAM(s(0) + s(1) + s(2) + l(3) + l(4)).fit(X, y)
 
-    # 模型3: 孕周与BMI交互
-    print("  - 正在训练模型3 (孕周×BMI交互)...")
-    models['M3_interact_WB'] = LinearGAM(te(0, 1) + s(2)).fit(X[feature_names[:3]], y)
+    # 模型3: 孕周×BMI交互 (在M2基础上添加交互项)
+    print("  - 正在训练模型3 (M2 + 孕周×BMI交互)...")
+    models['M3_interact_WB'] = LinearGAM(s(0) + s(1) + s(2) + l(3) + l(4) + te(0, 1)).fit(X, y)
     
-    # 模型4: 孕周与年龄交互
-    print("  - 正在训练模型4 (孕周×年龄交互)...")
-    models['M4_interact_WA'] = LinearGAM(te(0, 2) + s(1)).fit(X[feature_names[:3]], y)
+    # 模型4: 孕周×年龄交互 (在M2基础上添加交互项)
+    print("  - 正在训练模型4 (M2 + 孕周×年龄交互)...")
+    models['M4_interact_WA'] = LinearGAM(s(0) + s(1) + s(2) + l(3) + l(4) + te(0, 2)).fit(X, y)
 
-    # 模型5: 全交互模型 (孕周×BMI, 孕周×年龄, 以及怀孕/生产次数作为线性项)
-    print("  - 正在训练模型5 (全交互模型)...")
-    models['M5_full_interact'] = LinearGAM(te(0, 1) + te(0, 2) + l(3) + l(4)).fit(X, y)
+    # 模型5: BMI×年龄交互 (在M2基础上添加交互项)
+    print("  - 正在训练模型5 (M2 + BMI×年龄交互)...")
+    models['M5_interact_BA'] = LinearGAM(s(0) + s(1) + s(2) + l(3) + l(4) + te(1, 2)).fit(X, y)
 
     # 4. 比较模型性能并选择最优模型
     print("\n模型性能比较:")
@@ -83,7 +90,9 @@ def gam_enhanced_modeling():
     for name, model in models.items():
         # 计算显著性检验
         p_values = model.statistics_['p_values']
-        significant_terms = sum(p < 0.05 for p in p_values)
+        # 排除截距项
+        pvals_non_intercept = [p for t, p in zip(model.terms, p_values) if not t.isintercept]
+        significant_terms = sum(p < 0.05 for p in pvals_non_intercept)
         
         results.append({
             '模型': name,
@@ -91,7 +100,7 @@ def gam_enhanced_modeling():
             'AICc': f"{model.statistics_['AICc']:.2f}",
             'GCV': f"{model.statistics_['GCV']:.4f}",
             'EDoF': f"{model.statistics_['edof']:.2f}",
-            '显著项数': f"{significant_terms}/{len(p_values)}"
+            '显著项数': f"{significant_terms}/{len(pvals_non_intercept)}"
         })
     
     results_df = pd.DataFrame(results)
@@ -104,12 +113,15 @@ def gam_enhanced_modeling():
 
     # 5. 分析并可视化最优模型
     print(f"\n最优模型 ({best_model_name}) 摘要:")
-    summary_str = best_model.summary()
+    # pygam.summary() 直接打印到标准输出，这里捕获文本
+    _buf = StringIO()
+    with contextlib.redirect_stdout(_buf):
+        best_model.summary()
+    summary_str = _buf.getvalue()
     print(summary_str)
     
-    # 确定最佳模型使用了哪些特征
-    # 这里需要根据模型名称动态判断
-    if best_model_name in ['M1_baseline', 'M3_interact_WB', 'M4_interact_WA']:
+    # 所有模型现在都使用全部特征（除了M1）
+    if best_model_name == 'M1_baseline':
         best_model_features = feature_names[:3]  # 只有前三个特征：孕周、BMI、年龄
     else:
         best_model_features = feature_names  # 全部五个特征
@@ -129,6 +141,23 @@ def gam_enhanced_modeling():
     # 7. 进行模型诊断
     print("\n进行模型诊断...")
     perform_model_diagnostics(best_model, X, y, best_model_features, output_dir)
+
+    # 8. 整体模型的近似 F 检验（基于EDoF 和 方差分解，供参考）
+    if len(best_model_features) != X.shape[1]:
+        _idx = [list(X.columns).index(feat) for feat in best_model_features]
+        X_used = X.iloc[:, _idx]
+    else:
+        X_used = X
+    y_pred_best = best_model.predict(X_used)
+    n = len(y)
+    SSE = float(np.sum((y - y_pred_best) ** 2))
+    SSR = float(np.sum((y_pred_best - y.mean()) ** 2))
+    edof = float(best_model.statistics_['edof'])
+    df1 = max(1, int(np.ceil(edof)))
+    df2 = max(1, int(n - df1))
+    F_stat = (SSR / df1) / (SSE / df2)
+    F_p_value = float(stats.f.sf(F_stat, df1, df2))
+    print(f"\n整体模型显著性近似F检验: F({df1}, {df2}) = {F_stat:.3f}, p = {F_p_value:.4g}")
     
     # 保存基本结果到文本文件
     with open(f'{output_dir}/best_model_summary.txt', 'w', encoding='utf-8') as f:
@@ -138,9 +167,20 @@ def gam_enhanced_modeling():
         f.write(results_df.to_string(index=False) + "\n\n")
         f.write("="*70 + "\n")
         f.write(f"最优模型 ({best_model_name}) 摘要:\n")
-        f.write(str(summary_str) + "\n\n")
+        f.write(summary_str + "\n")
+        f.write("整体模型显著性近似F检验:\n")
+        f.write(f"F({df1}, {df2}) = {F_stat:.3f}, p = {F_p_value:.4g}\n\n")
+        f.write("注: GAM 平滑项的 p 值与上述 F 检验均为近似量，且 pyGAM 在估计平滑参数时 p 值可能偏小，请谨慎解读。\n")
         
     print(f"\n分析完成。所有结果已保存至 '{output_dir}' 目录。")
+
+    # 9. K折交叉验证评估所有候选模型（MAE/RMSE/R²）
+    print("\n开始进行5折交叉验证评估所有候选模型 (MAE/RMSE/R²)...")
+    cv_df = cross_validate_all_models(X, y, feature_names, k=5, random_state=42)
+    print("\n交叉验证汇总结果:")
+    print(cv_df.to_string(index=False))
+    cv_df.to_csv(f'{output_dir}/cv_results.csv', index=False, encoding='utf-8-sig')
+    print(f"已保存交叉验证结果至 {output_dir}/cv_results.csv")
 
 def create_detailed_summary(model, feature_names):
     """创建详细的模型摘要表格"""
@@ -198,26 +238,26 @@ def create_detailed_summary(model, feature_names):
         # 获取EDoF (有效自由度) - 使用可用的统计信息
         edof = np.nan  # 暂时不提供单个项的EDoF
         
-        # 获取Lambda (平滑惩罚系数) - 使用新的方法
+        # 获取Lambda (平滑惩罚系数)：对数组保留完整显示
+        lam_display = ""
         try:
             if hasattr(model, 'lam') and i < len(model.lam):
                 lam_val = model.lam[i]
-                # 处理数组情况
                 if isinstance(lam_val, (list, tuple, np.ndarray)):
-                    lam = lam_val[0] if len(lam_val) > 0 else np.nan
+                    lam_display = np.array2string(np.array(lam_val), precision=1, separator=' ')
+                elif isinstance(lam_val, (int, float, np.floating)):
+                    lam_display = f"{lam_val:.6f}"
                 else:
-                    lam = lam_val
-            else:
-                lam = np.nan
-        except (IndexError, TypeError):
-            lam = np.nan
+                    lam_display = str(lam_val)
+        except Exception:
+            lam_display = ""
         
         # 添加行数据
         rows.append({
             'Term (模型项)': term_name,
             'Term_Type (项类型)': term_type_cn,
             'EDoF (有效自由度)': f"{edof:.3f}" if not np.isnan(edof) else "",
-            'Lambda (平滑惩罚系数)': f"{lam:.6f}" if isinstance(lam, (int, float)) and not np.isnan(lam) else str(lam),
+            'Lambda (平滑惩罚系数)': lam_display,
             'P-value (P值)': f"{p_value:.4f}" if not np.isnan(p_value) else "",
             'Significance (显著性水平)': significance,
             'Interpretation (业务解读)': "" # 留空，用于后续手动填写
@@ -229,27 +269,19 @@ def create_detailed_summary(model, feature_names):
 def create_partial_dependence_plots(model, feature_names, output_dir):
     """为模型中的每个项创建偏依赖图"""
     
-    # 图表整体设置
-    plt.figure(figsize=(18, 12))
-    
-    # 为每个模型项生成子图位置
-    num_plots = len(model.terms)
-    rows = max(1, (num_plots + 1) // 2)  # 向上取整
-    cols = min(2, num_plots)  # 最多2列
-    
-    # 创建一个统一的图表
+    # 收集需要绘制的项（排除截距），并计算网格
+    plot_indices = [i for i, t in enumerate(model.terms) if not getattr(t, 'isintercept', False)]
+    num_plots = len(plot_indices)
+    rows = int(np.ceil(num_plots / 2))
+    cols = 2 if num_plots > 1 else 1
     fig = plt.figure(figsize=(16, rows * 6))
-    
-    for i, term in enumerate(model.terms):
+
+    for plot_pos, i in enumerate(plot_indices, start=1):
+        term = model.terms[i]
         term_type = term.__class__.__name__
         
-        # 根据项的类型创建不同的可视化
-        if i == 0 and term_type == 'Intercept':
-            # 跳过截距项
-            continue
-        
-        # 创建子图
-        ax = fig.add_subplot(rows, cols, i + 1)
+        # 创建子图（位置由实际绘制的项数决定，避免空白子图）
+        ax = fig.add_subplot(rows, cols, plot_pos)
         
         if term_type == 'SplineTerm':
             # 为平滑项创建一维偏依赖图
@@ -411,6 +443,95 @@ def perform_model_diagnostics(model, X, y, feature_names, output_dir):
     
     diag_stats.to_csv(f'{output_dir}/diagnostic_statistics.csv', index=False, encoding='utf-8-sig')
     print(f"已保存诊断统计量到 {output_dir}/diagnostic_statistics.csv")
+
+def cross_validate_all_models(X, y, feature_names, k=5, random_state=42):
+    """对当前脚本中的6个候选模型进行K折交叉验证，返回每个模型的平均指标"""
+    # 定义模型规格（构建器 + 使用的特征列表）
+    specs = {
+        'M1_baseline': {
+            'builder': lambda: LinearGAM(s(0) + s(1) + s(2)),
+            'features': feature_names[:3]
+        },
+        'M2_add_C_D': {
+            'builder': lambda: LinearGAM(s(0) + s(1) + s(2) + l(3) + l(4)),
+            'features': feature_names
+        },
+        'M3_interact_WB': {
+            'builder': lambda: LinearGAM(s(0) + s(1) + s(2) + l(3) + l(4) + te(0, 1)),
+            'features': feature_names
+        },
+        'M4_interact_WA': {
+            'builder': lambda: LinearGAM(s(0) + s(1) + s(2) + l(3) + l(4) + te(0, 2)),
+            'features': feature_names
+        },
+        'M5_interact_BA': {
+            'builder': lambda: LinearGAM(s(0) + s(1) + s(2) + l(3) + l(4) + te(1, 2)),
+            'features': feature_names
+        }
+    }
+
+    n = len(y)
+    idx = np.arange(n)
+    rng = np.random.RandomState(random_state)
+    rng.shuffle(idx)
+
+    # 计算每折大小
+    fold_sizes = np.full(k, n // k, dtype=int)
+    fold_sizes[: n % k] += 1
+    current = 0
+
+    # 为每个模型准备容器
+    results = {name: {'MAE': [], 'RMSE': [], 'R2': []} for name in specs}
+
+    for fold in range(k):
+        start, stop = current, current + fold_sizes[fold]
+        test_idx = idx[start:stop]
+        train_idx = np.concatenate([idx[:start], idx[stop:]])
+        current = stop
+
+        y_train = y.iloc[train_idx]
+        y_test = y.iloc[test_idx]
+
+        for name, spec in specs.items():
+            feats = spec['features']
+            X_train = X[feats].iloc[train_idx]
+            X_test = X[feats].iloc[test_idx]
+            gam = spec['builder']()
+            try:
+                gam.fit(X_train, y_train)
+                preds = gam.predict(X_test)
+                mae = float(np.mean(np.abs(y_test - preds)))
+                rmse = float(np.sqrt(np.mean((y_test - preds) ** 2)))
+                # R² on test fold
+                ss_res = float(np.sum((y_test - preds) ** 2))
+                ss_tot = float(np.sum((y_test - y_test.mean()) ** 2))
+                r2 = float(1 - ss_res / ss_tot) if ss_tot > 0 else np.nan
+            except Exception as e:
+                mae, rmse, r2 = np.nan, np.nan, np.nan
+            results[name]['MAE'].append(mae)
+            results[name]['RMSE'].append(rmse)
+            results[name]['R2'].append(r2)
+
+    # 汇总
+    rows = []
+    for name, mets in results.items():
+        row = {
+            '模型': name,
+            'MAE_mean': np.nanmean(mets['MAE']),
+            'MAE_std': np.nanstd(mets['MAE']),
+            'RMSE_mean': np.nanmean(mets['RMSE']),
+            'RMSE_std': np.nanstd(mets['RMSE']),
+            'R2_mean': np.nanmean(mets['R2']),
+            'R2_std': np.nanstd(mets['R2'])
+        }
+        rows.append(row)
+    df = pd.DataFrame(rows)
+    # 排序：优先RMSE，其次MAE
+    df = df.sort_values(by=['RMSE_mean', 'MAE_mean', 'R2_mean'], ascending=[True, True, False])
+    # 保留小数
+    for col in ['MAE_mean', 'MAE_std', 'RMSE_mean', 'RMSE_std', 'R2_mean', 'R2_std']:
+        df[col] = df[col].map(lambda v: f"{v:.6f}" if pd.notnull(v) else "")
+    return df
 
 if __name__ == "__main__":
     gam_enhanced_modeling()
