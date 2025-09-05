@@ -675,18 +675,33 @@ def build_model_specs(feature_names, n_splines_s=20, n_splines_te=10):
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="GAM Enhanced Modeling")
+    parser = argparse.ArgumentParser(description="已迁移：建议使用 main.py 运行。本入口为兼容包装。")
     parser.add_argument("--n_splines_s", type=int, default=20, help="单变量平滑项基函数数量")
     parser.add_argument("--n_splines_te", type=int, default=10, help="交互张量项每维基函数数量")
     parser.add_argument("--k", type=int, default=5, help="K折交叉验证的折数")
     parser.add_argument("--repeats", type=int, default=3, help="重复K折次数")
     parser.add_argument("--no_save_fold_predictions", action="store_true", help="不保存每折预测与残差")
+    parser.add_argument("--processed_data", type=str, default="processed_data.csv")
+    parser.add_argument("--output_dir", type=str, default="gam_enhanced_results")
     args = parser.parse_args()
 
-    gam_enhanced_modeling(
-        n_splines_s=args.n_splines_s,
-        n_splines_te=args.n_splines_te,
-        k=args.k,
-        repeats=args.repeats,
-        save_fold_predictions=not args.no_save_fold_predictions,
-    )
+    try:
+        from main import run as _run
+        _run(
+            processed_data_path=args.processed_data,
+            output_dir=args.output_dir,
+            n_splines_s=args.n_splines_s,
+            n_splines_te=args.n_splines_te,
+            k=args.k,
+            repeats=args.repeats,
+            save_fold_predictions=not args.no_save_fold_predictions,
+        )
+    except Exception:
+        # 兜底：仍可调用旧函数（不推荐）
+        gam_enhanced_modeling(
+            n_splines_s=args.n_splines_s,
+            n_splines_te=args.n_splines_te,
+            k=args.k,
+            repeats=args.repeats,
+            save_fold_predictions=not args.no_save_fold_predictions,
+        )
