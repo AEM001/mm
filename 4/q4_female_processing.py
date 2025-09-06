@@ -3,8 +3,6 @@ from __future__ import annotations
 import argparse
 import math
 import re
-from dataclasses import dataclass
-from datetime import datetime
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
@@ -65,42 +63,7 @@ def to_datetime_safe(v: object, fmt: Optional[str] = None) -> Optional[pd.Timest
         return None
 
 
-@dataclass
-class QCThresholds:
-    min_unique_effective_reads: float = 3_000_000
-    min_map_rate: float = 0.80
-    max_dup_rate: float = 0.30
-    max_filter_ratio: float = 0.10
-    gc_low: float = 0.35
-    gc_high: float = 0.45
-
-
-def compute_qc(row: pd.Series, thr: QCThresholds) -> Tuple[bool, List[str]]:
-    reasons = []
-    uniq = row.get("唯一比对的读段数", np.nan)
-    dup = row.get("重复读段的比例", np.nan)
-    mapr = row.get("在参考基因组上比对的比例", np.nan)
-    filt = row.get("被过滤掉读段数的比例", np.nan)
-    gc = row.get("GC含量", np.nan)
-
-    uniq_eff = np.nan
-    if pd.notna(uniq) and pd.notna(dup):
-        uniq_eff = uniq * (1 - dup)
-        if uniq_eff < thr.min_unique_effective_reads:
-            reasons.append(f"唯一有效读段数<{thr.min_unique_effective_reads:.0f}")
-    else:
-        reasons.append("唯一有效读段数缺失")
-
-    if pd.notna(mapr) and mapr < thr.min_map_rate:
-        reasons.append(f"比对比例<{thr.min_map_rate}")
-    if pd.notna(dup) and dup > thr.max_dup_rate:
-        reasons.append(f"重复比例>{thr.max_dup_rate}")
-    if pd.notna(filt) and filt > thr.max_filter_ratio:
-        reasons.append(f"过滤比例>{thr.max_filter_ratio}")
-    if pd.notna(gc) and (gc < thr.gc_low or gc > thr.gc_high):
-        reasons.append(f"GC含量不在[{thr.gc_low},{thr.gc_high}]")
-
-    return (len(reasons) == 0), reasons
+ 
 
 
 def build_labels(df: pd.DataFrame) -> pd.DataFrame:
@@ -184,17 +147,6 @@ def clean_female_sheet(df: pd.DataFrame) -> pd.DataFrame:
     df = build_labels(df)
     df = rule_flags(df)
 
-    # QC
-    thr = QCThresholds()
-    qc_pass_list = []
-    qc_reason_list = []
-    for _, r in df.iterrows():
-        ok, reasons = compute_qc(r, thr)
-        qc_pass_list.append(ok)
-        qc_reason_list.append(";".join(reasons))
-    df["qc_pass"] = qc_pass_list
-    df["qc_fail_reasons"] = qc_reason_list
-
     # 精简特征选择：只保留15个核心特征，去除冗余
     keep_cols = [
         # 标识与基本信息 (5个)
@@ -206,8 +158,8 @@ def clean_female_sheet(df: pd.DataFrame) -> pd.DataFrame:
         # 染色体Z值特征 (4个) - 去除X染色体浓度冗余
         "13号染色体的Z值", "18号染色体的Z值", "21号染色体的Z值", "X染色体的Z值",
         
-        # 标签与QC (3个)
-        "is_abnormal", "ab_T13", "ab_T18", "ab_T21", "qc_pass"
+        # 标签 (4个) - 不在此阶段输出QC
+        "is_abnormal", "ab_T13", "ab_T18", "ab_T21"
     ]
     
     # 确保所有列都存在，过滤掉不存在的列
