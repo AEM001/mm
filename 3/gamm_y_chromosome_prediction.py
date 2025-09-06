@@ -44,12 +44,8 @@ try:
     print("R接口可用，将使用mgcv包进行GAMM建模")
 except Exception as e:
     R_AVAILABLE = False
-    print(f"R接口不可用，将使用Python替代方案: {e}")
+    print(f"R接口不可用：本项目强制使用 R GAMM")
 
-# 无论R是否可用，都导入这些模块以避免NameError
-from sklearn.ensemble import RandomForestRegressor
-from sklearn.linear_model import Ridge
-from sklearn.preprocessing import PolynomialFeatures
 
 class GAMMYChromosomePredictor:
     """
@@ -65,7 +61,10 @@ class GAMMYChromosomePredictor:
         use_r_gamm : bool
             是否使用R的mgcv包进行GAMM建模
         """
-        self.use_r_gamm = use_r_gamm and R_AVAILABLE
+        # 强制仅使用R/mgcv GAMM
+        if not R_AVAILABLE:
+            raise RuntimeError("R/mgcv (via rpy2) 不可用：本项目强制使用 R GAMM")
+        self.use_r_gamm = True
         self.model = None
         self.scaler = StandardScaler()
         self.feature_names = ['BMI_标准化', '年龄_标准化', '怀孕次数_标准化', '生产次数_标准化', 
@@ -204,28 +203,44 @@ class GAMMYChromosomePredictor:
         if self.use_r_gamm and R_AVAILABLE:
             return self._test_significance_r_gamm(X, y, alpha)
         else:
-            return self._test_significance_python(X, y, alpha)
+            raise RuntimeError("Python替代显著性检验已禁用；请确保R/mgcv可用")
     
     def _test_significance_r_gamm(self, X, y, alpha=0.05):
         """
         使用R的GAMM进行显著性检验
         """
         try:
-            # 准备数据
-            data_dict = {}
-            for i, col in enumerate(self.feature_names):
-                if i < X.shape[1]:
-                    data_dict[f'x{i+1}'] = X.iloc[:, i] if hasattr(X, 'iloc') else X[:, i]
-            data_dict['y'] = y
-            
-            # 转换为R数据框（处理pandas转换问题）
-            with pandas2ri.converter.context():
-                r_data = robjects.DataFrame(data_dict)
-            
-            # 构建包含所有特征的GAMM公式
+            # 准备数据（使用pandas DataFrame确保对齐，并通过pandas2ri转换）
             n_features = X.shape[1]
-            smooth_terms = [f's(x{i+1}, k=5)' for i in range(n_features)]
-            formula = f"y ~ {' + '.join(smooth_terms)}"
+            py_df = pd.DataFrame({'y': pd.Series(y).reset_index(drop=True)})
+            for i in range(n_features):
+                xi = X.iloc[:, i] if hasattr(X, 'iloc') else X[:, i]
+                py_df[f'x{i+1}'] = pd.Series(xi).reset_index(drop=True)
+            with pandas2ri.converter.context():
+                r_data = pandas2ri.py2rpy(py_df)
+            
+            # 构建包含所有特征的GAMM公式（自适应k；低唯一值走线性项）
+            n_features = X.shape[1]
+            smooth_terms = []
+            linear_terms = []
+            for i in range(n_features):
+                xi = X.iloc[:, i] if hasattr(X, 'iloc') else X[:, i]
+                try:
+                    n_unique = len(pd.Series(xi).dropna().unique())
+                except Exception:
+                    n_unique = 10
+                if n_unique >= 4:
+                    k_i = min(5, max(2, int(n_unique) - 1))
+                    smooth_terms.append(f"s(x{i+1}, k={k_i})")
+                else:
+                    linear_terms.append(f"x{i+1}")
+            rhs_terms = []
+            if smooth_terms:
+                rhs_terms.append(' + '.join(smooth_terms))
+            if linear_terms:
+                rhs_terms.append(' + '.join(linear_terms))
+            rhs = ' + '.join([t for t in rhs_terms if t]) if rhs_terms else '1'
+            formula = f"y ~ {rhs}"
             
             # 拟合完整模型
             full_model = mgcv.gam(robjects.Formula(formula), data=r_data, method="REML")
@@ -240,8 +255,17 @@ class GAMMYChromosomePredictor:
             # 对每个特征进行单独检验
             for i, feature_name in enumerate(self.feature_names[:n_features]):
                 try:
-                    # 构建单特征模型
-                    single_formula = f"y ~ s(x{i+1}, k=5)"
+                    # 构建单特征模型（自适应）
+                    xi = X.iloc[:, i] if hasattr(X, 'iloc') else X[:, i]
+                    try:
+                        n_unique = len(pd.Series(xi).dropna().unique())
+                    except Exception:
+                        n_unique = 10
+                    if n_unique >= 4:
+                        k_i = min(5, max(2, int(n_unique) - 1))
+                        single_formula = f"y ~ s(x{i+1}, k={k_i})"
+                    else:
+                        single_formula = f"y ~ x{i+1}"
                     single_model = mgcv.gam(robjects.Formula(single_formula), data=r_data, method="REML")
                     single_summary = base.summary(single_model)
                     
@@ -252,7 +276,7 @@ class GAMMYChromosomePredictor:
                         print(f"{feature_name}: 显著 (解释度: {dev_expl*100:.2f}%)")
                     else:
                         print(f"{feature_name}: 不显著 (解释度: {dev_expl*100:.2f}%)")
-                        
+                    
                 except Exception as e:
                     print(f"{feature_name}: 检验失败 - {e}")
                     
@@ -260,52 +284,7 @@ class GAMMYChromosomePredictor:
             
         except Exception as e:
             print(f"R GAMM显著性检验失败: {e}")
-            return self._test_significance_python(X, y, alpha)
-    
-    def _test_significance_python(self, X, y, alpha=0.05):
-        """
-        使用Python方法进行显著性检验（基于相关性和随机森林重要性）
-        """
-        significant_features = []
-        significance_results = []
-        
-        for i, feature_name in enumerate(self.feature_names[:X.shape[1]]):
-            # 计算相关系数和p值
-            feature_values = X.iloc[:, i] if hasattr(X, 'iloc') else X[:, i]
-            corr, p_value = stats.pearsonr(feature_values, y)
-            
-            # 使用随机森林评估特征重要性
-            rf = RandomForestRegressor(n_estimators=50, random_state=42)
-            rf.fit(np.array(feature_values).reshape(-1, 1), y)
-            importance = rf.feature_importances_[0]
-            
-            # 计算t统计量
-            n = len(feature_values)
-            t_stat = corr * np.sqrt((n-2)/(1-corr**2)) if abs(corr) < 1 else np.inf
-            
-            # 综合判断：p值显著或重要性较高
-            is_significant = p_value < alpha or importance > 0.1
-            if is_significant:
-                significant_features.append(feature_name)
-                print(f"{feature_name}: 显著 (相关性p值: {p_value:.4f}, 重要性: {importance:.4f})")
-            else:
-                print(f"{feature_name}: 不显著 (相关性p值: {p_value:.4f}, 重要性: {importance:.4f})")
-            
-            # 保存结果
-            significance_results.append({
-                '特征名称': feature_name,
-                '相关系数': corr,
-                'p值': p_value,
-                't统计量': t_stat,
-                '随机森林重要性': importance,
-                '是否显著': '是' if is_significant else '否',
-                '显著性水平': alpha
-            })
-        
-        # 保存显著性检验结果到类属性
-        self.significance_results = pd.DataFrame(significance_results)
-        
-        return significant_features
+            raise
     
     def exploratory_data_analysis(self, df):
         """
@@ -423,33 +402,47 @@ class GAMMYChromosomePredictor:
         if self.use_r_gamm:
             self._fit_r_gamm(X, y, patient_ids)
         else:
-            self._fit_python_alternative(X, y)
+            raise RuntimeError("Python替代建模已禁用；请确保R/mgcv可用")
     
     def _fit_r_gamm(self, X, y, patient_ids=None):
         """
         使用R的mgcv包拟合GAMM模型
         """
         try:
-            # 准备数据
-            data_dict = {}
+            # 准备数据（使用robjects向量，确保列名和长度一致，且patient_id为factor）
             n_features = X.shape[1]
+            y_series = pd.Series(y).reset_index(drop=True)
+            col_map = {
+                'y': robjects.FloatVector(pd.to_numeric(y_series, errors='coerce').astype(float).tolist())
+            }
             for i in range(n_features):
-                data_dict[f'x{i+1}'] = X.iloc[:, i] if hasattr(X, 'iloc') else X[:, i]
-            data_dict['y'] = y
+                xi = X.iloc[:, i] if hasattr(X, 'iloc') else X[:, i]
+                xi_series = pd.Series(xi).reset_index(drop=True)
+                col_map[f'x{i+1}'] = robjects.FloatVector(pd.to_numeric(xi_series, errors='coerce').astype(float).tolist())
+            r_data = robjects.DataFrame(col_map)
             
-            if patient_ids is not None:
-                data_dict['patient_id'] = patient_ids
-            
-            # 转换为R数据框
-            with pandas2ri.converter.context():
-                r_data = robjects.DataFrame(data_dict)
-            
-            # 构建GAMM公式（动态生成）
-            smooth_terms = [f's(x{i+1}, k=5)' for i in range(n_features)]
-            if patient_ids is not None:
-                formula = f"y ~ {' + '.join(smooth_terms)} + s(patient_id, bs='re')"
-            else:
-                formula = f"y ~ {' + '.join(smooth_terms)}"
+            # 构建GAMM公式（动态生成，按特征唯一值数自适应k；低唯一值走线性项）
+            smooth_terms = []
+            linear_terms = []
+            for i in range(n_features):
+                xi = X.iloc[:, i] if hasattr(X, 'iloc') else X[:, i]
+                try:
+                    n_unique = len(pd.Series(xi).dropna().unique())
+                except Exception:
+                    n_unique = 10  # 回退一个安全值
+                if n_unique >= 4:
+                    k_i = min(5, max(2, int(n_unique) - 1))
+                    smooth_terms.append(f"s(x{i+1}, k={k_i})")
+                else:
+                    linear_terms.append(f"x{i+1}")
+
+            rhs_terms = []
+            if smooth_terms:
+                rhs_terms.append(' + '.join(smooth_terms))
+            if linear_terms:
+                rhs_terms.append(' + '.join(linear_terms))
+            rhs = ' + '.join([t for t in rhs_terms if t]) if rhs_terms else '1'
+            formula = f"y ~ {rhs}"
             
             print(f"GAMM公式: {formula}")
             
@@ -469,62 +462,7 @@ class GAMMYChromosomePredictor:
             self.results['n_features'] = n_features
             
         except Exception as e:
-            print(f"R GAMM拟合失败: {e}")
-            print("切换到Python替代方案")
-            self.use_r_gamm = False
-            self._fit_python_alternative(X, y)
-    
-    def _fit_python_alternative(self, X, y):
-        """
-        使用Python替代方案（随机森林 + 多项式特征）
-        """
-        print("使用Python替代方案进行建模...")
-        
-        # 创建多项式特征以模拟光滑函数
-        poly_features = PolynomialFeatures(degree=2, interaction_only=True, include_bias=False)
-        X_poly = poly_features.fit_transform(X)
-        
-        # 使用随机森林作为主模型
-        rf_model = RandomForestRegressor(
-            n_estimators=100,
-            max_depth=10,
-            min_samples_split=5,
-            min_samples_leaf=2,
-            random_state=42
-        )
-        
-        # 使用岭回归作为辅助模型
-        ridge_model = Ridge(alpha=1.0)
-        
-        # 拟合模型
-        rf_model.fit(X, y)
-        ridge_model.fit(X_poly, y)
-        
-        # 集成预测
-        self.model = {
-            'rf': rf_model,
-            'ridge': ridge_model,
-            'poly_features': poly_features
-        }
-        
-        # 计算模型性能
-        y_pred_rf = rf_model.predict(X)
-        y_pred_ridge = ridge_model.predict(X_poly)
-        y_pred_ensemble = 0.7 * y_pred_rf + 0.3 * y_pred_ridge
-        
-        r2 = r2_score(y, y_pred_ensemble)
-        rmse = np.sqrt(mean_squared_error(y, y_pred_ensemble))
-        mae = mean_absolute_error(y, y_pred_ensemble)
-        
-        print(f"Python替代模型性能:")
-        print(f"R²: {r2:.4f}")
-        print(f"RMSE: {rmse:.4f}")
-        print(f"MAE: {mae:.4f}")
-        
-        self.results['model_type'] = 'Python_Alternative'
-        self.results['r_squared'] = r2
-        self.results['rmse'] = rmse
-        self.results['mae'] = mae
+            raise RuntimeError(f"R GAMM拟合失败：{e}. 请检查特征唯一值与k设置，或清洗数据后重试。")
     
     def predict(self, X_new):
         """
@@ -546,7 +484,7 @@ class GAMMYChromosomePredictor:
         if self.use_r_gamm:
             return self._predict_r_gamm(X_new)
         else:
-            return self._predict_python_alternative(X_new)
+            raise RuntimeError("Python替代预测已禁用；请确保R/mgcv可用")
     
     def _predict_r_gamm(self, X_new):
         """

@@ -108,16 +108,8 @@ class BMIBoundaryStrategy(GroupingStrategy):
     
     def get_groups_and_true_times(self, data_file):
         """使用BMI分界值进行分组"""
-        # 导入新的NIPT时点优化器
-        import sys
-        import os
-        
-        # 添加目录3到路径，以便导入NIPTTimingOptimizer
-        dir3_path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), '3')
-        if dir3_path not in sys.path:
-            sys.path.insert(0, dir3_path)
-        
-        from nipt_timing_optimization import NIPTTimingOptimizer
+        # 使用问题二本地化实现的NIPT时点优化器（与问题三彻底分离）
+        from bmi_boundary_optimizer import NIPTTimingOptimizer
         
         # 使用NIPT优化器进行分析
         optimizer = NIPTTimingOptimizer(data_file)
