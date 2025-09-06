@@ -39,7 +39,7 @@ except Exception:
 # 导入问题三的分析器（GAMM + KMeans）
 from kmeans_bmi_segmentation import BMISegmentationAnalyzer
 
-# 导入问题二的检测误差分析工具
+# 导入问题二的检测误差分析工具（向后兼容）
 TOOLS_DIR_Q2 = os.path.join(PROJECT_ROOT, '2')
 if TOOLS_DIR_Q2 not in sys.path:
     sys.path.insert(0, TOOLS_DIR_Q2)
@@ -47,6 +47,7 @@ from detection_error_analysis import (
     DetectionErrorAnalyzer,
     create_error_visualizations,
     generate_error_report,
+    run_error_analysis_with_strategy,  # 新增：支持策略模式
 )
 
 

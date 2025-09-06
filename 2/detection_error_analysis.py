@@ -2,13 +2,18 @@
 # -*- coding: utf-8 -*-
 """
 NIPT检测误差分析模块
-问题2：区间删失生存模型的检测误差分析
+问题2：支持多种分组方法的检测误差分析
 
 实现功能：
 1. 测量噪声估计与平滑
 2. 假阳性/假阴性概率分析
 3. 蒙特卡洛模拟达标时间偏差
 4. 误差分析可视化与报告
+
+支持的分组方法：
+- 区间删失生存模型分组
+- BMI分界值分组
+- 其他自定义分组方法
 """
 
 import pandas as pd
@@ -23,6 +28,20 @@ import os
 import warnings
 warnings.filterwarnings('ignore')
 
+# 导入中文字体设置
+import platform
+
+def set_chinese_font():
+    """设置matplotlib中文字体显示"""
+    system = platform.system()
+    if system == 'Darwin':  # macOS
+        plt.rcParams['font.sans-serif'] = ['STSong', 'Songti SC', 'STHeiti']
+    elif system == 'Windows':
+        plt.rcParams['font.sans-serif'] = ['Microsoft YaHei', 'SimHei', 'STSong']
+    else:
+        plt.rcParams['font.sans-serif'] = ['SimHei', 'STSong']  # 其他系统尝试通用字体
+    plt.rcParams['axes.unicode_minus'] = False
+
 # 项目路径与中文字体（跨设备）
 import sys
 PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -33,6 +52,100 @@ set_chinese_font()
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 if SCRIPT_DIR not in sys.path:
     sys.path.insert(0, SCRIPT_DIR)
+
+
+class GroupingStrategy:
+    """
+    分组策略基类，用于支持不同的BMI分组方法
+    """
+    
+    def get_groups_and_true_times(self, data_file):
+        """
+        获取分组信息和真实达标时间
+        
+        Args:
+            data_file: 数据文件路径
+            
+        Returns:
+            tuple: (bmi_groups DataFrame, true_times array)
+        """
+        raise NotImplementedError("子类必须实现此方法")
+    
+    def get_strategy_name(self):
+        """获取策略名称"""
+        raise NotImplementedError("子类必须实现此方法")
+
+
+class IntervalCensoredStrategy(GroupingStrategy):
+    """
+    区间删失生存模型分组策略（原有方法）
+    """
+    
+    def get_groups_and_true_times(self, data_file):
+        """使用区间删失生存模型进行分组"""
+        from interval_censored_survival_model import IntervalCensoredSurvivalModel
+        
+        model = IntervalCensoredSurvivalModel()
+        model.load_and_prepare_data(data_file)
+        model.fit_aft_model(distribution='lognormal')  # 使用支持的分布
+        model.perform_bmi_clustering(n_clusters=4)
+        model.determine_optimal_timing(success_rate=0.9)
+        
+        bmi_groups = model.bmi_groups.copy()
+        optimal_timings = model.optimal_timings.copy()
+        true_times = optimal_timings.sort_values('组别')['最佳时点'].values
+        
+        return bmi_groups.sort_values('组别'), true_times
+    
+    def get_strategy_name(self):
+        return "区间删失生存模型"
+
+
+class BMIBoundaryStrategy(GroupingStrategy):
+    """
+    BMI分界值分组策略（新方法）
+    """
+    
+    def get_groups_and_true_times(self, data_file):
+        """使用BMI分界值进行分组"""
+        # 导入新的NIPT时点优化器
+        import sys
+        import os
+        
+        # 添加目录3到路径，以便导入NIPTTimingOptimizer
+        dir3_path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), '3')
+        if dir3_path not in sys.path:
+            sys.path.insert(0, dir3_path)
+        
+        from nipt_timing_optimization import NIPTTimingOptimizer
+        
+        # 使用NIPT优化器进行分析
+        optimizer = NIPTTimingOptimizer(data_file)
+        recommendations_df = optimizer.run_analysis()
+        
+        if recommendations_df is None or len(recommendations_df) == 0:
+            raise ValueError("BMI分界值分组失败，无有效分组结果")
+        
+        # 转换为与原有格式兼容的分组信息
+        bmi_groups = []
+        true_times = []
+        
+        for _, row in recommendations_df.iterrows():
+            bmi_groups.append({
+                '组别': int(row['BMI组别']),
+                'BMI区间': row['BMI范围_标准化'],
+                'BMI均值': row['BMI均值_标准化'],
+                '样本数': row['样本数']
+            })
+            true_times.append(row['建议检测时点_原始周数'])
+        
+        bmi_groups_df = pd.DataFrame(bmi_groups)
+        true_times_array = np.array(true_times)
+        
+        return bmi_groups_df, true_times_array
+    
+    def get_strategy_name(self):
+        return "BMI分界值分组"
 
 
 class DetectionErrorAnalyzer:
@@ -412,6 +525,9 @@ def create_error_visualizations(analyzer, noise_df, error_df, sim_df):
     """
     print("=== 创建误差分析可视化 ===")
     
+    # 设置中文字体
+    set_chinese_font()
+    
     fig, axes = plt.subplots(2, 3, figsize=(18, 12))
     
     # 1. 噪声水平分布
@@ -642,25 +758,31 @@ def generate_error_report(analyzer):
     return report
 
 
-def main():
+def run_error_analysis_with_strategy(strategy, data_file=None, output_suffix=''):
     """
-    运行检测误差分析全流程：
-    1) 读取 processed_data.csv
-    2) 估计测量噪声
-    3) 误差率分析（假阳/假阴）
-    4) 通过区间删失AFT模型取得各BMI组最佳时点作为 true_times，进行蒙特卡洛模拟
-    5) 生成可视化与报告
+    使用指定策略运行检测误差分析
+    
+    Args:
+        strategy: GroupingStrategy子类实例
+        data_file: 数据文件路径，如果为None则使用默认路径
+        output_suffix: 输出目录后缀，用于区分不同策略的结果
     """
-    from interval_censored_survival_model import IntervalCensoredSurvivalModel
-
-    print("NIPT 检测误差分析 - 开始")
-    output_dir = os.path.join(SCRIPT_DIR, 'loglogistic_aft_results')
+    print(f"=== NIPT检测误差分析 - {strategy.get_strategy_name()} ===")
+    
+    # 设置输出目录
+    if output_suffix:
+        output_dir = os.path.join(SCRIPT_DIR, f'detection_error_results_{output_suffix}')
+    else:
+        output_dir = os.path.join(SCRIPT_DIR, 'detection_error_results')
     os.makedirs(output_dir, exist_ok=True)
-
+    
+    # 默认数据文件路径
+    if data_file is None:
+        data_file = os.path.join(SCRIPT_DIR, 'processed_data.csv')
+    
     # 1) 读取数据
-    data_file = os.path.join(SCRIPT_DIR, 'processed_data.csv')
     raw_df = pd.read_csv(data_file)
-
+    
     # 2) 估计噪声
     analyzer = DetectionErrorAnalyzer(output_dir=output_dir)
     noise_summary, noise_df = analyzer.estimate_measurement_noise(
@@ -670,7 +792,7 @@ def main():
         col_week='孕周_标准化',
         smoothing_window=3,
     )
-
+    
     # 3) 误差率分析
     error_summary, error_df = analyzer.analyze_detection_errors(
         raw_df,
@@ -678,32 +800,100 @@ def main():
         col_y='Y染色体浓度',
         noise_level=noise_summary['噪声水平']['平滑法']['均值'] if '噪声水平' in noise_summary else None,
     )
-
-    # 4) 区间删失AFT模型获取各组最佳时点
-    model = IntervalCensoredSurvivalModel()
-    model.load_and_prepare_data(data_file)
-    model.fit_aft_model(distribution='loglogistic')
-    model.perform_bmi_clustering(n_clusters=4)
-    model.determine_optimal_timing(success_rate=0.9)
-    bmi_groups = model.bmi_groups.copy()
-    optimal_timings = model.optimal_timings.copy()
-    # true_times 顺序与 bmi_groups 行顺序一致（组别1..k）
-    true_times = optimal_timings.sort_values('组别')['最佳时点'].values
-
+    
+    # 4) 使用指定策略获取分组和真实时间
+    try:
+        bmi_groups, true_times = strategy.get_groups_and_true_times(data_file)
+        print(f"使用{strategy.get_strategy_name()}获取分组成功")
+        print(f"分组数量: {len(bmi_groups)}")
+        print(f"真实时间: {true_times}")
+    except Exception as e:
+        print(f"使用{strategy.get_strategy_name()}获取分组失败: {e}")
+        return None
+    
     # 5) 蒙特卡洛模拟
     sim_summary, sim_df = analyzer.monte_carlo_simulation(
         true_times=true_times,
-        bmi_groups=bmi_groups.sort_values('组别'),
+        bmi_groups=bmi_groups,
         n_simulations=1000,
         noise_level=noise_summary['噪声水平']['平滑法']['均值'] if '噪声水平' in noise_summary else None,
     )
-
+    
     # 6) 可视化与报告
     create_error_visualizations(analyzer, noise_df, error_df, sim_df)
     generate_error_report(analyzer)
-
-    print("\n=== 检测误差分析完成 ===")
+    
+    print(f"\n=== {strategy.get_strategy_name()}检测误差分析完成 ===")
     print("所有结果已保存到子目录:", os.path.relpath(analyzer.error_dir, SCRIPT_DIR))
+    
+    return {
+        'strategy': strategy.get_strategy_name(),
+        'analyzer': analyzer,
+        'noise_summary': noise_summary,
+        'error_summary': error_summary,
+        'sim_summary': sim_summary
+    }
+
+
+def main(strategy_type='interval_censored'):
+    """
+    主函数：运行检测误差分析
+    
+    Args:
+        strategy_type: 分组策略类型
+            - 'interval_censored': 区间删失生存模型（原有方法）
+            - 'bmi_boundary': BMI分界值分组（新方法）
+    """
+    data_file = os.path.join(SCRIPT_DIR, 'processed_data.csv')
+    
+    if strategy_type == 'interval_censored':
+        strategy = IntervalCensoredStrategy()
+        suffix = 'interval_censored'
+    elif strategy_type == 'bmi_boundary':
+        strategy = BMIBoundaryStrategy()
+        suffix = 'bmi_boundary'
+    else:
+        raise ValueError(f"不支持的策略类型: {strategy_type}")
+    
+    return run_error_analysis_with_strategy(strategy, data_file, suffix)
+
+
+def compare_strategies():
+    """
+    比较不同分组策略的检测误差分析结果
+    """
+    print("=== 比较不同分组策略 ===")
+    
+    strategies = [
+        ('interval_censored', IntervalCensoredStrategy()),
+        ('bmi_boundary', BMIBoundaryStrategy())
+    ]
+    
+    results = {}
+    data_file = os.path.join(SCRIPT_DIR, 'processed_data.csv')
+    
+    for strategy_name, strategy in strategies:
+        try:
+            print(f"\n--- 运行{strategy.get_strategy_name()}策略 ---")
+            result = run_error_analysis_with_strategy(strategy, data_file, strategy_name)
+            if result:
+                results[strategy_name] = result
+        except Exception as e:
+            print(f"策略{strategy.get_strategy_name()}执行失败: {e}")
+            continue
+    
+    # 生成比较报告
+    if len(results) > 1:
+        print("\n=== 策略比较总结 ===")
+        for strategy_name, result in results.items():
+            noise_level = result['noise_summary']['噪声水平']['平滑法']['均值'] if 'noise_summary' in result else 'N/A'
+            avg_bias = result['sim_summary']['总体偏差']['平均偏差'] if 'sim_summary' in result else 'N/A'
+            print(f"{result['strategy']}:")
+            print(f"  平均噪声水平: {noise_level:.6f}" if isinstance(noise_level, float) else f"  平均噪声水平: {noise_level}")
+            print(f"  平均时间偏差: {avg_bias:.2f}周" if isinstance(avg_bias, float) else f"  平均时间偏差: {avg_bias}")
+            print()
+    
+    return results
 
 
 if __name__ == '__main__':
