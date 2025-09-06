@@ -129,11 +129,12 @@ def clean_female_sheet(df: pd.DataFrame) -> pd.DataFrame:
     elif "检测孕周_周" in df.columns:
         df["孕周_周"] = df["检测孕周_周"]
 
-    # numeric coercions
+    # numeric coercions（扩展：包含过滤比例、怀孕/生产次数等）
     num_cols = [
         "孕妇BMI", "原始读段数", "在参考基因组上比对的比例", "重复读段的比例", "唯一比对的读段数",
-        "GC含量", "13号染色体的GC含量", "18号染色体的GC含量", "21号染色体的GC含量",
+        "被过滤掉读段数的比例", "GC含量", "13号染色体的GC含量", "18号染色体的GC含量", "21号染色体的GC含量",
         "13号染色体的Z值", "18号染色体的Z值", "21号染色体的Z值", "X染色体的Z值", "X染色体浓度",
+        "怀孕次数", "生产次数",
     ]
     for c in num_cols:
         if c in df.columns:
@@ -147,18 +148,56 @@ def clean_female_sheet(df: pd.DataFrame) -> pd.DataFrame:
     df = build_labels(df)
     df = rule_flags(df)
 
-    # 精简特征选择：只保留15个核心特征，去除冗余
+    # IVF妊娠二值编码，自然受孕=0，IVF=1（未知保持NaN）
+    if "IVF妊娠" in df.columns:
+        def _encode_ivf(x):
+            if pd.isna(x):
+                return np.nan
+            s = str(x).strip().lower()
+            if "自然" in s:
+                return 0
+            if "ivf" in s or "试管" in s or "体外" in s:
+                return 1
+            return np.nan
+        df["IVF妊娠_编码"] = df["IVF妊娠"].apply(_encode_ivf)
+
+    # 高龄产妇指示：年龄≥35 -> 1，否则0
+    if "年龄" in df.columns:
+        df["高龄"] = (pd.to_numeric(df["年龄"], errors="coerce") >= 35).astype("Int64")
+
+    # 标准化连续变量（不对Z值进行标准化；其余连续变量均标准化）
+    cont_cols = [
+        # 时点与母体因素
+        "孕周_周", "年龄", "孕妇BMI", "怀孕次数", "生产次数",
+        # 测序质量
+        "原始读段数", "被过滤掉读段数的比例", "唯一比对的读段数", "在参考基因组上比对的比例", "GC含量",
+        # 染色体GC与其他连续变量
+        "13号染色体的GC含量", "18号染色体的GC含量", "21号染色体的GC含量", "X染色体浓度",
+    ]
+    cont_cols = [c for c in cont_cols if c in df.columns]
+    for c in cont_cols:
+        s = pd.to_numeric(df[c], errors="coerce")
+        mean = s.mean(skipna=True)
+        std = s.std(skipna=True, ddof=0)
+        if pd.isna(std) or std == 0:
+            df[f"{c}_std"] = 0.0
+        else:
+            df[f"{c}_std"] = (s - mean) / std
+
+    # 精简特征选择：保留指导中涉及的特征（连续变量保留标准化版，Z值保留原值）
     keep_cols = [
-        # 标识与基本信息 (5个)
-        "孕妇代码", "检测抽血次数", "孕周_周", "年龄", "孕妇BMI",
-        
-        # 测序质量核心指标 (3个) - 去除冗余的原始读段数、重复比例、各染色体GC等
-        "唯一比对的读段数", "GC含量", "在参考基因组上比对的比例",
-        
-        # 染色体Z值特征 (4个) - 去除X染色体浓度冗余
+        # 标识与基本信息
+        "孕妇代码", "检测抽血次数", "IVF妊娠_编码", "高龄",
+
+        # 连续变量（标准化）
+        "孕周_周_std", "年龄_std", "孕妇BMI_std", "怀孕次数_std", "生产次数_std",
+        "原始读段数_std", "被过滤掉读段数的比例_std", "唯一比对的读段数_std", "在参考基因组上比对的比例_std", "GC含量_std",
+        "13号染色体的GC含量_std", "18号染色体的GC含量_std", "21号染色体的GC含量_std", "X染色体浓度_std",
+
+        # Z值（原值）
         "13号染色体的Z值", "18号染色体的Z值", "21号染色体的Z值", "X染色体的Z值",
-        
-        # 标签 (4个) - 不在此阶段输出QC
+
+        # 标签
         "is_abnormal", "ab_T13", "ab_T18", "ab_T21"
     ]
     
