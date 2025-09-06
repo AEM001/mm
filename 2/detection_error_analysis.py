@@ -642,13 +642,27 @@ def generate_error_report(analyzer):
     """
     print("=== 生成误差分析报告 ===")
     
-    # 动态设置分析依据描述
+    # 动态设置报告标题与分析依据描述
     analysis_basis = analyzer.report_context.get('analysis_basis', '区间删失生存模型分组')
-    report = f"""# NIPT检测误差分析报告
+    report_title = analyzer.report_context.get('report_title', 'NIPT检测误差分析报告')
+    report = f"""# {report_title}
 
 ## 1. 分析概述
 
 本报告分析NIPT检测过程中的测量误差及其对达标时间估计的影响，基于{analysis_basis}的结果进行误差传播分析。
+"""
+
+    # 可选：分组设定与依据
+    group_summary = analyzer.report_context.get('group_summary')
+    if group_summary:
+        report += f"""
+
+## 1.1 分组设定与依据
+
+{group_summary}
+"""
+
+    report += f"""
 
 ## 2. 测量噪声分析
 
@@ -743,7 +757,7 @@ def generate_error_report(analyzer):
 
 ## 6. 技术说明
 
-- **分析基础**: 基于区间删失生存模型的检测数据
+- **分析基础**: 基于{analyzer.report_context.get('analysis_basis', '区间删失生存模型分组')}的检测数据
 - **噪声估计**: 采用多种方法交叉验证噪声水平
 - **误差分析**: 基于正态噪声假设的理论分析
 - **模拟验证**: 蒙特卡洛方法验证误差传播效应

@@ -12,6 +12,7 @@ warnings.filterwarnings('ignore')
 
 # 设置中文字体
 try:
+
     import sys
     import os
     sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
