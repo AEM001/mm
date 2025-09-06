@@ -15,17 +15,24 @@
 import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
-import seaborn as sns
-from scipy import stats
-from scipy.optimize import minimize_scalar
 from sklearn.cluster import KMeans
-from sklearn.preprocessing import StandardScaler
 import warnings
 warnings.filterwarnings('ignore')
+import os
+import sys
+# 将项目根目录加入模块搜索路径，确保可以导入 set_chinese_font.py
+PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+if PROJECT_ROOT not in sys.path:
+    sys.path.insert(0, PROJECT_ROOT)
+from set_chinese_font import set_chinese_font
+try:
+    from lifelines import LogLogisticAFTFitter
+    HAVE_LIFELINES = True
+except Exception:
+    HAVE_LIFELINES = False
 
-# 设置中文字体
-plt.rcParams['font.sans-serif'] = ['SimHei', 'Microsoft YaHei']
-plt.rcParams['axes.unicode_minus'] = False
+# 设置中文字体（跨平台）
+set_chinese_font()
 
 class IntervalCensoredSurvivalModel:
     """
@@ -40,6 +47,10 @@ class IntervalCensoredSurvivalModel:
         # 时间标准化参数（假设：均值=15周，标准差=3周）
         self.time_mean = 16.846
         self.time_std = 4.076
+        # 基于当前脚本所在目录的输出路径设置，确保跨设备可用
+        self.base_dir = os.path.dirname(os.path.abspath(__file__))
+        self.output_dir = os.path.join(self.base_dir, 'loglogistic_aft_results')
+        os.makedirs(self.output_dir, exist_ok=True)
     
     def standardized_to_original_time(self, standardized_time):
         """将标准化时间转换为原始孕周"""
@@ -95,7 +106,7 @@ class IntervalCensoredSurvivalModel:
         
         df = df_clean
         
-        # 构建区间删失数据
+        # 构建区间删失数据（原始孕周尺度）
         interval_data = []
         
         # 由于processed_data.csv中数据已经标准化，我们需要适应新的列名
@@ -106,56 +117,51 @@ class IntervalCensoredSurvivalModel:
         
         print(f"使用的列名: BMI={bmi_col}, 年龄={age_col}, 孕周={week_col}")
         
+        eps = 1e-3  # 避免左删失下界为0
+        
         for woman_code, woman_data in df.groupby('孕妇代码'):
-            # 如果有孕周信息，按孕周排序
+            # 如果有孕周信息，按孕周排序，并去除缺失
             if week_col and week_col in woman_data.columns:
+                woman_data = woman_data.dropna(subset=[week_col])
+                if len(woman_data) == 0:
+                    continue
                 woman_data = woman_data.sort_values(week_col).reset_index(drop=True)
             else:
-                woman_data = woman_data.reset_index(drop=True)
+                # 无孕周信息则无法按原始尺度建模，跳过
+                continue
             
             # 获取基本信息
             bmi = woman_data[bmi_col].iloc[0] if bmi_col else 0.0
             age = woman_data[age_col].iloc[0] if age_col and age_col in woman_data.columns else 0.0
             
-            # 寻找Y染色体浓度达标的时间点
-            # 注意：processed_data.csv中的Y染色体浓度可能已经是对数变换后的值
+            # Y 染色体浓度（logit 尺度）
             y_concentrations = woman_data['Y染色体浓度'].values
-            
-            # 如果有孕周信息，使用孕周；否则使用索引作为时间代理
-            if week_col and week_col in woman_data.columns:
-                time_points = woman_data[week_col].values
-            else:
-                # 使用检测顺序作为时间代理
-                time_points = np.arange(len(woman_data))
-            
-            # 判断删失类型 - 使用4%的Y染色体浓度作为达标标准（题目要求）
-            # 4%的Logit变换: logit(0.04) = log(0.04/(1-0.04)) = log(0.04/0.96)
             threshold_percentage = 0.04
-            threshold = np.log(threshold_percentage / (1 - threshold_percentage))  # Logit变换后的阈值
+            threshold = np.log(threshold_percentage / (1 - threshold_percentage))
             qualified_indices = np.where(y_concentrations >= threshold)[0]
             
+            # 将标准化孕周转换为原始孕周
+            week_std = woman_data[week_col].values
+            time_points = self.standardized_to_original_time(week_std)
+            
+            # 判别删失类型并生成区间（原始孕周）
             if len(qualified_indices) == 0:
-                # 右删失：所有检测都未达标
                 censoring_type = 'right'
-                left_time = time_points[-1]  # 最后一次检测时间
+                left_time = float(time_points[-1])
                 right_time = np.inf
-                event_time = time_points[-1]
-                
+                event_time = left_time
             elif qualified_indices[0] == 0:
-                # 左删失：第一次检测就达标
                 censoring_type = 'left'
-                left_time = 0
-                right_time = time_points[0]
-                event_time = time_points[0]
-                
+                left_time = eps
+                right_time = float(time_points[0])
+                event_time = right_time
             else:
-                # 区间删失：在某两次检测之间达标
                 censoring_type = 'interval'
                 first_qualified_idx = qualified_indices[0]
-                left_time = time_points[first_qualified_idx - 1]
-                right_time = time_points[first_qualified_idx]
-                event_time = (left_time + right_time) / 2  # 区间中点作为估计
-                
+                left_time = float(time_points[first_qualified_idx - 1])
+                right_time = float(time_points[first_qualified_idx])
+                event_time = (left_time + right_time) / 2.0
+            
             interval_data.append({
                 '孕妇代码': woman_code,
                 'BMI': bmi,
@@ -163,10 +169,15 @@ class IntervalCensoredSurvivalModel:
                 '删失类型': censoring_type,
                 '左端点': left_time,
                 '右端点': right_time,
+                'lower_bound': left_time,
+                'upper_bound': right_time,
                 '事件时间估计': event_time,
                 '检测次数': len(woman_data),
-                'Y浓度均值': np.mean(y_concentrations),
-                'Y浓度最大值': np.max(y_concentrations)
+                'Y浓度均值': float(np.mean(y_concentrations)),
+                'Y浓度最大值': float(np.max(y_concentrations)),
+                # lifelines 使用 ASCII 列名
+                'bmi': bmi,
+                'age': age,
             })
         
         self.data = pd.DataFrame(interval_data)
@@ -178,246 +189,52 @@ class IntervalCensoredSurvivalModel:
         print(f"\nBMI范围: {self.data['BMI'].min():.1f} - {self.data['BMI'].max():.1f}")
         print(f"事件时间范围: {self.data['事件时间估计'].min():.1f} - {self.data['事件时间估计'].max():.1f}周")
         
+        # 保存构建的数据集到子目录
+        try:
+            out_csv = os.path.join(self.output_dir, 'interval_censored_dataset.csv')
+            self.data.to_csv(out_csv, index=False)
+            print(f"已保存区间删失数据集: {os.path.basename(out_csv)}")
+        except Exception:
+            pass
         return self.data
     
-    def fit_aft_model(self, distribution='weibull'):
+    def fit_aft_model(self, distribution='loglogistic'):
         """
-        拟合加速失效时间(AFT)模型
+        拟合加速失效时间(AFT)模型（仅支持 Log-Logistic / 区间删失）
         
         Args:
-            distribution: 生存时间分布类型 ('weibull', 'lognormal', 'exponential')
+            distribution: 目前仅支持 'loglogistic'
         """
         print(f"\n=== 步骤2: AFT模型拟合 ({distribution}分布) ===")
-        
-        # 准备建模数据
-        # 数据已经标准化，直接使用
-        X = self.data[['BMI', '年龄']].fillna(0.0)  # 标准化数据的缺失值用0填充
-        y = self.data['事件时间估计'].values
-        
-        # 确保时间值为正数（对于对数变换）
-        y = np.maximum(y, 0.1)  # 避免零值或负值
-        
-        # 数据已经是标准化后的，直接使用
-        X_scaled = X.values
-        
-        if distribution == 'weibull':
-            # Weibull AFT模型的改进实现
-            # log(T) = β0 + β1*BMI + β2*Age + σ*ε
-            # 其中ε服从极值分布
-            
-            def weibull_log_likelihood(params):
-                beta0, beta1, beta2, sigma = params
-                
-                # 确保sigma为正数
-                if sigma <= 0:
-                    return 1e10
-                
-                try:
-                    # 线性预测器
-                    linear_pred = beta0 + beta1 * X_scaled[:, 0] + beta2 * X_scaled[:, 1]
-                    
-                    # 标准化残差
-                    log_y = np.log(np.maximum(y, 1e-10))  # 避免log(0)
-                    standardized_residuals = (log_y - linear_pred) / sigma
-                    
-                    # 检查数值稳定性
-                    if np.any(np.isnan(standardized_residuals)) or np.any(np.isinf(standardized_residuals)):
-                        return 1e10
-                    
-                    # Weibull分布的对数似然（数值稳定版本）
-                    exp_neg_resid = np.exp(-standardized_residuals)
-                    # 避免exp溢出
-                    exp_neg_resid = np.minimum(exp_neg_resid, 1e10)
-                    
-                    log_likelihood = np.sum(
-                        -standardized_residuals - exp_neg_resid - np.log(sigma)
-                    )
-                    
-                    # 检查结果的有效性
-                    if np.isnan(log_likelihood) or np.isinf(log_likelihood):
-                        return 1e10
-                    
-                    return -log_likelihood  # 返回负对数似然用于最小化
-                    
-                except Exception as e:
-                    return 1e10
-            
-            # 改进的初始参数估计
-            from scipy.optimize import minimize
-            
-            # 更稳定的初始值
-            y_mean = np.mean(y)
-            y_std = np.std(y)
-            initial_params = [np.log(y_mean), 0.0, 0.0, max(0.5, y_std/y_mean)]
-            
-            # 参数边界约束
-            bounds = [(-10, 10), (-5, 5), (-5, 5), (0.1, 10)]
-            
-            # 多种优化方法尝试
-            methods = ['L-BFGS-B', 'SLSQP', 'TNC']
-            best_result = None
-            best_likelihood = 1e10
-            
-            for method in methods:
-                try:
-                    result = minimize(weibull_log_likelihood, initial_params, 
-                                    method=method, bounds=bounds,
-                                    options={'maxiter': 2000, 'ftol': 1e-9})
-                    
-                    if result.success and result.fun < best_likelihood:
-                        best_result = result
-                        best_likelihood = result.fun
-                        
-                except Exception as e:
-                    continue
-            
-            result = best_result
-            
-        elif distribution == 'lognormal':
-            # 对数正态AFT模型实现
-            # log(T) = β0 + β1*BMI + β2*Age + σ*ε
-            # 其中ε服从标准正态分布
-            
-            def lognormal_log_likelihood(params):
-                beta0, beta1, beta2, sigma = params
-                
-                # 确保sigma为正数
-                if sigma <= 0:
-                    return 1e10
-                
-                try:
-                    # 线性预测器
-                    linear_pred = beta0 + beta1 * X_scaled[:, 0] + beta2 * X_scaled[:, 1]
-                    
-                    # 标准化残差
-                    log_y = np.log(np.maximum(y, 1e-10))  # 避免log(0)
-                    standardized_residuals = (log_y - linear_pred) / sigma
-                    
-                    # 检查数值稳定性
-                    if np.any(np.isnan(standardized_residuals)) or np.any(np.isinf(standardized_residuals)):
-                        return 1e10
-                    
-                    # 对数正态分布的对数似然
-                    log_likelihood = np.sum(
-                        -0.5 * standardized_residuals**2 - 0.5 * np.log(2 * np.pi) - np.log(sigma)
-                    )
-                    
-                    # 检查结果的有效性
-                    if np.isnan(log_likelihood) or np.isinf(log_likelihood):
-                        return 1e10
-                    
-                    return -log_likelihood  # 返回负对数似然用于最小化
-                    
-                except Exception as e:
-                    return 1e10
-            
-            # 改进的初始参数估计
-            from scipy.optimize import minimize
-            
-            # 更稳定的初始值
-            y_mean = np.mean(y)
-            y_std = np.std(y)
-            initial_params = [np.log(y_mean), 0.0, 0.0, max(0.5, y_std/y_mean)]
-            
-            # 参数边界约束
-            bounds = [(-10, 10), (-5, 5), (-5, 5), (0.1, 10)]
-            
-            # 多种优化方法尝试
-            methods = ['L-BFGS-B', 'SLSQP', 'TNC']
-            best_result = None
-            best_likelihood = 1e10
-            
-            for method in methods:
-                try:
-                    result = minimize(lognormal_log_likelihood, initial_params, 
-                                    method=method, bounds=bounds,
-                                    options={'maxiter': 2000, 'ftol': 1e-9})
-                    
-                    if result.success and result.fun < best_likelihood:
-                        best_result = result
-                        best_likelihood = result.fun
-                        
-                except Exception as e:
-                    continue
-            
-            result = best_result
-            
-        else:
-            raise ValueError(f"不支持的分布类型: {distribution}")
-            
-        # 处理优化结果
-        if result is not None and result.success:
-            beta0, beta1, beta2, sigma = result.x
-            self.model_params = {
-                'distribution': distribution,
-                'beta0': beta0,
-                'beta_bmi': beta1,
-                'beta_age': beta2,
-                'sigma': sigma,
-                'log_likelihood': -result.fun
-            }
-            
-            print(f"模型拟合成功!")
-            print(f"参数估计:")
-            print(f"  截距 (β0): {beta0:.4f}")
-            print(f"  BMI系数 (β1): {beta1:.4f}")
-            print(f"  年龄系数 (β2): {beta2:.4f}")
-            print(f"  尺度参数 (σ): {sigma:.4f}")
-            print(f"  对数似然: {-result.fun:.2f}")
-            
-            # 解释系数
-            print(f"\n系数解释:")
-            if beta1 > 0:
-                print(f"  BMI每增加1个标准差，达标时间延长 {np.exp(beta1):.3f} 倍")
-            else:
-                print(f"  BMI每增加1个标准差，达标时间缩短为原来的 {np.exp(beta1):.3f} 倍")
-                
-        else:
-            # 优化失败，使用简化模型
-            print("标准优化失败，尝试简化模型...")
-            
-            # 使用简单的线性回归作为备用方案
-            from sklearn.linear_model import LinearRegression
-            
-            try:
-                # 对数变换的线性回归
-                log_y = np.log(np.maximum(y, 1e-10))
-                reg = LinearRegression().fit(X_scaled, log_y)
-                
-                beta0 = reg.intercept_
-                beta1, beta2 = reg.coef_
-                sigma = np.std(log_y - reg.predict(X_scaled))
-                
-                self.model_params = {
-                    'distribution': 'linear_fallback',
-                    'beta0': beta0,
-                    'beta_bmi': beta1,
-                    'beta_age': beta2,
-                    'sigma': sigma,
-                    'log_likelihood': None
-                }
-                
-                print(f"使用线性回归备用模型成功!")
-                print(f"参数估计:")
-                print(f"  截距 (β0): {beta0:.4f}")
-                print(f"  BMI系数 (β1): {beta1:.4f}")
-                print(f"  年龄系数 (β2): {beta2:.4f}")
-                print(f"  残差标准差 (σ): {sigma:.4f}")
-                
-            except Exception as e:
-                print(f"所有模型拟合方法都失败了: {str(e)}")
-                print(f"数据统计信息:")
-                print(f"  样本数量: {len(y)}")
-                print(f"  Y值范围: [{np.min(y):.3f}, {np.max(y):.3f}]")
-                print(f"  X值范围: BMI[{np.min(X_scaled[:, 0]):.3f}, {np.max(X_scaled[:, 0]):.3f}], 年龄[{np.min(X_scaled[:, 1]):.3f}, {np.max(X_scaled[:, 1]):.3f}]")
-                self.model_params = None
-            return None
-                
+        # 仅支持 Log-Logistic AFT（区间删失）
+        if distribution.lower() != 'loglogistic':
+            raise ValueError("当前实现仅支持 'loglogistic' 分布。")
+        if not HAVE_LIFELINES:
+            raise ImportError("未检测到 lifelines，请先安装：pip install lifelines 或 conda install -c conda-forge lifelines")
+        required_cols = ['lower_bound', 'upper_bound', 'bmi']
+        for col in required_cols:
+            if col not in self.data.columns:
+                raise ValueError(f"缺少必要列: {col}，请先运行 load_and_prepare_data() 并确保包含孕周信息。")
+        df_model = self.data[['lower_bound', 'upper_bound']].copy()
+        df_model['bmi'] = self.data['bmi'].fillna(0.0).values
+        df_model['age'] = self.data['age'].fillna(0.0).values if 'age' in self.data.columns else 0.0
+        aft = LogLogisticAFTFitter()
+        aft.fit_interval_censoring(df_model, lower_bound_col='lower_bound', upper_bound_col='upper_bound', formula="bmi + age")
+        self.model = aft
+        self.model_params = {
+            'distribution': 'loglogistic_aft',
+            'log_likelihood': float(getattr(aft, 'log_likelihood_', np.nan)),
+        }
+        print("模型拟合成功! (Log-Logistic AFT / 区间删失)")
+        try:
+            print(aft.summary)
+        except Exception:
+            pass
         return self.model_params
     
     def predict_survival_function(self, bmi_values, age_values=None, time_points=None):
         """
-        预测生存函数 S(t|BMI, Age)
+        预测生存函数 S(t|BMI, Age)（原始孕周尺度）
         
         Args:
             bmi_values: BMI值数组
@@ -432,50 +249,31 @@ class IntervalCensoredSurvivalModel:
         
         if age_values is None:
             age_values = np.full_like(bmi_values, self.data['年龄'].mean())
-            
+        
+        # 默认时间范围：基于区间上下界的有限值
         if time_points is None:
-            # 根据实际数据范围调整时间点
-            min_time = self.data['事件时间估计'].min()
-            max_time = self.data['事件时间估计'].max()
-            time_points = np.linspace(min_time, max_time, 100)
-            
-        # 数据已经是标准化后的，直接使用
-        X = np.column_stack([bmi_values, age_values])
-        X_scaled = X
-        
-        # 计算线性预测器
-        linear_pred = (self.model_params['beta0'] + 
-                      self.model_params['beta_bmi'] * X_scaled[:, 0] + 
-                      self.model_params['beta_age'] * X_scaled[:, 1])
-        
-        # 添加调试信息
-        print(f"    调试信息: BMI={bmi_values[0]:.2f}, 年龄={age_values[0]:.2f}")
-        print(f"    标准化后: BMI={X_scaled[0,0]:.2f}, 年龄={X_scaled[0,1]:.2f}")
-        print(f"    线性预测器: {linear_pred[0]:.4f}")
-        print(f"    模型参数: β0={self.model_params['beta0']:.4f}, β_bmi={self.model_params['beta_bmi']:.4f}, β_age={self.model_params['beta_age']:.4f}, σ={self.model_params['sigma']:.4f}")
-        
-        # 计算生存函数
-        survival_probs = np.zeros((len(bmi_values), len(time_points)))
-        
-        distribution = self.model_params['distribution']
-        
-        for i, t in enumerate(time_points):
-            # 注意：现在t是标准化时间，不需要取对数
-            # 在AFT模型中，标准化时间直接用于计算
-            if distribution == 'weibull':
-                # Weibull生存函数（使用标准化时间）
-                standardized_time = (t - linear_pred) / self.model_params['sigma']
-                survival_probs[:, i] = np.exp(-np.exp(-standardized_time))
-            elif distribution == 'lognormal':
-                # 对数正态生存函数（使用标准化时间）
-                standardized_time = (t - linear_pred) / self.model_params['sigma']
-                survival_probs[:, i] = 1 - stats.norm.cdf(standardized_time)
+            upper_finite = self.data['upper_bound'].replace(np.inf, np.nan)
+            finite_times = np.concatenate([
+                self.data['lower_bound'].values,
+                upper_finite.values
+            ])
+            finite_times = finite_times[np.isfinite(finite_times)]
+            if finite_times.size > 0:
+                min_time = max(0.01, np.nanmin(finite_times))
+                max_time = np.nanmax(finite_times)
             else:
-                # 备用线性模型
-                standardized_time = (t - linear_pred) / self.model_params['sigma']
-                survival_probs[:, i] = np.exp(-np.exp(-standardized_time))
-            
-        return survival_probs, time_points
+                min_time, max_time = 8.0, 30.0
+            time_points = np.linspace(min_time, max_time, 200)
+        
+        # Log-Logistic AFT 预测路径（唯一支持）
+        if str(self.model_params.get('distribution', '')).startswith('loglogistic') and hasattr(self, 'model'):
+            X = pd.DataFrame({'bmi': bmi_values, 'age': age_values})
+            sf_df = self.model.predict_survival_function(X, times=time_points)
+            survival_probs = sf_df.values.T  # n x len(times)
+            print(f"    调试信息: BMI={bmi_values[0]:.2f}, 年龄={age_values[0]:.2f}")
+            print(f"    使用 Log-Logistic AFT 模型进行预测，时间范围: [{time_points[0]:.1f}, {time_points[-1]:.1f}] 周")
+            return survival_probs, time_points
+        raise ValueError("当前预测仅支持已拟合的 Log-Logistic AFT 模型。")
     
     def perform_bmi_clustering(self, n_clusters=None):
         """
@@ -565,39 +363,32 @@ class IntervalCensoredSurvivalModel:
             
             print(f"第{group['组别']}组: BMI均值={bmi_mean:.2f}, 年龄均值={age_mean:.2f}")
             
-            # 预测该组的生存函数（使用标准化的时间尺度）
-            # 注意：数据中的时间已经标准化，范围约为-1.4到2.0
-            # 我们需要使用相同的标准化时间尺度进行预测
-            standardized_time_points = np.linspace(-2, 3, 100)  # 扩展标准化时间范围
+            # 预测该组的生存函数（原始孕周尺度）
             survival_probs, time_points = self.predict_survival_function(
                 bmi_values=np.array([bmi_mean]),
-                age_values=np.array([age_mean]),  # 使用该组的年龄均值
-                time_points=standardized_time_points
+                age_values=np.array([age_mean])
             )
             
             # 计算达标概率 F(t) = 1 - S(t)
             success_probs = 1 - survival_probs[0]
             
             # 添加调试信息：显示关键时间点的成功率
-            key_times = [-1, 0, 1, 2]  # 标准化时间点
+            key_times = [12, 16, 20, 24]  # 原始孕周
             print(f"  关键时间点成功率:")
             for kt in key_times:
                 if kt >= time_points.min() and kt <= time_points.max():
                     idx = np.argmin(np.abs(time_points - kt))
-                    original_week = self.standardized_to_original_time(kt)
-                    print(f"    {original_week:.1f}周: {success_probs[idx]*100:.1f}%")
+                    print(f"    {kt:.1f}周: {success_probs[idx]*100:.1f}%")
             
             # 找到首次达到目标成功率的时间点
             target_indices = np.where(success_probs >= success_rate)[0]
             
             if len(target_indices) > 0:
-                optimal_time_std = time_points[target_indices[0]]
-                optimal_time_original = self.standardized_to_original_time(optimal_time_std)
+                optimal_time_original = time_points[target_indices[0]]
                 print(f"  达到{success_rate*100}%成功率的时间点: {optimal_time_original:.1f}周")
             else:
                 # 如果无法达到目标成功率，选择最高成功率对应的时间
-                optimal_time_std = time_points[np.argmax(success_probs)]
-                optimal_time_original = self.standardized_to_original_time(optimal_time_std)
+                optimal_time_original = time_points[np.argmax(success_probs)]
                 actual_success_rate = np.max(success_probs)
                 print(f"  警告: 第{group['组别']}组无法达到{success_rate*100}%成功率，实际最高成功率: {actual_success_rate*100:.1f}%")
             
@@ -622,10 +413,6 @@ class IntervalCensoredSurvivalModel:
             print(f"  最佳时点: {timing['最佳时点']:.1f}周")
             print(f"  预期成功率: {timing['预期成功率']*100:.1f}%")
             print(f"  风险等级: {timing['风险等级']}")
-            
-            # 检查最佳时点是否接近最小值
-            if optimal_time_original <= self.standardized_to_original_time(time_points[5]):  # 如果在前5个时间点内
-                print(f"  警告: 第{group['组别']}组的最佳时点({optimal_time_original:.1f}周)接近最小时间点，可能需要扩展时间范围")
             
             # 添加调试信息
             if timing['最佳时点'] <= 8.5:  # 如果最佳时点接近最小值
@@ -659,16 +446,25 @@ class IntervalCensoredSurvivalModel:
         
         # 2. 生存曲线
         ax2 = axes[0, 1]
-        # 使用标准化时间范围，与模型训练一致
-        standardized_time_points = np.linspace(-2, 3, 100)
-        # 转换为原始孕周显示
-        original_time_points = self.standardized_to_original_time(standardized_time_points)
+        # 使用原始孕周范围
+        upper_finite = self.data['upper_bound'].replace(np.inf, np.nan)
+        finite_times = np.concatenate([
+            self.data['lower_bound'].values,
+            upper_finite.values
+        ])
+        finite_times = finite_times[np.isfinite(finite_times)]
+        if finite_times.size > 0:
+            tmin = max(0.01, np.nanmin(finite_times))
+            tmax = np.nanmax(finite_times)
+        else:
+            tmin, tmax = 8.0, 30.0
+        original_time_points = np.linspace(tmin, tmax, 200)
         
         for i, (_, group) in enumerate(self.bmi_groups.iterrows()):
             bmi_mean = group['BMI均值']
             survival_probs, _ = self.predict_survival_function(
                 bmi_values=np.array([bmi_mean]),
-                time_points=standardized_time_points
+                time_points=original_time_points
             )
             
             ax2.plot(original_time_points, survival_probs[0], 
@@ -713,10 +509,11 @@ class IntervalCensoredSurvivalModel:
                     f'{rate:.1f}%', ha='center', va='bottom')
         
         plt.tight_layout()
-        plt.savefig('./interval_censored_survival_analysis_results.png', dpi=300, bbox_inches='tight')
+        save_path = os.path.join(self.output_dir, 'interval_censored_survival_analysis_results.png')
+        plt.savefig(save_path, dpi=300, bbox_inches='tight')
         plt.show()
         
-        print("结果图表已保存为: interval_censored_survival_analysis_results.png")
+        print("结果图表已保存为:", os.path.basename(save_path))
     
     def generate_report(self):
         """
@@ -738,16 +535,21 @@ class IntervalCensoredSurvivalModel:
         for censoring_type, count in self.data['删失类型'].value_counts().items():
             report += f"- {censoring_type}: {count}例 ({count/len(self.data)*100:.1f}%)\n"
             
-        report += f"""
+        # 3. 模型参数
+        report += "\n## 3. 模型参数\n"
+        report += "- 分布类型: Log-Logistic AFT (区间删失)\n"
+        try:
+            ll = float(getattr(self.model, 'log_likelihood_', np.nan))
+            report += f"- 对数似然: {ll:.2f}\n"
+        except Exception:
+            pass
+        try:
+            summary_str = self.model.summary.to_string()
+            report += "\n### 参数估计摘要\n\n````\n" + summary_str + "\n````\n"
+        except Exception:
+            pass
 
-## 3. 模型参数
-- 分布类型: {self.model_params['distribution']}
-- BMI系数: {self.model_params['beta_bmi']:.4f}
-- 年龄系数: {self.model_params['beta_age']:.4f}
-- 对数似然: {self.model_params['log_likelihood']:.2f}
-
-## 4. BMI分组结果
-"""
+        report += "\n## 4. BMI分组结果\n"
         
         for _, group in self.bmi_groups.iterrows():
             report += f"- 第{group['组别']}组: BMI {group['BMI区间']}, 样本数 {group['样本数']}\n"
@@ -767,10 +569,11 @@ class IntervalCensoredSurvivalModel:
 """
         
         # 保存报告
-        with open('./interval_censored_survival_analysis_report.md', 'w', encoding='utf-8') as f:
+        report_path = os.path.join(self.output_dir, 'interval_censored_survival_analysis_report.md')
+        with open(report_path, 'w', encoding='utf-8') as f:
             f.write(report)
             
-        print("分析报告已保存为: interval_censored_survival_analysis_report.md")
+        print("分析报告已保存为:", os.path.basename(report_path))
         print(report)
         
         return report
@@ -789,11 +592,12 @@ def main():
     
     try:
         # 步骤1: 数据准备
-        data_file = r'c:\Users\Lu\Desktop\最终版本代码\问题二\processed_data.csv'
+        # 使用与脚本同目录下的 processed_data.csv，避免跨设备路径问题
+        data_file = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'processed_data.csv')
         model.load_and_prepare_data(data_file)
         
-        # 步骤2: 模型拟合（使用对数正态分布）
-        model.fit_aft_model(distribution='lognormal')
+        # 步骤2: 模型拟合（使用 Log-Logistic AFT 区间删失）
+        model.fit_aft_model(distribution='loglogistic')
         
         # 步骤3: BMI分组
         model.perform_bmi_clustering(n_clusters=4)  # 可以调整聚类数
@@ -808,7 +612,7 @@ def main():
         model.generate_report()
         
         print("\n=== 分析完成 ===")
-        print("所有结果文件已保存到当前目录")
+        print("所有结果文件已保存到子目录: loglogistic_aft_results/")
         
     except Exception as e:
         print(f"分析过程中出现错误: {str(e)}")

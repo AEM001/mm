@@ -23,11 +23,16 @@ import os
 import warnings
 warnings.filterwarnings('ignore')
 
-# 项目路径与中文字体
+# 项目路径与中文字体（跨设备）
 import sys
-sys.path.append('/Users/Mac/Downloads/mm')
+PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+if PROJECT_ROOT not in sys.path:
+    sys.path.insert(0, PROJECT_ROOT)
 from set_chinese_font import set_chinese_font
 set_chinese_font()
+SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+if SCRIPT_DIR not in sys.path:
+    sys.path.insert(0, SCRIPT_DIR)
 
 
 class DetectionErrorAnalyzer:
@@ -635,3 +640,71 @@ def generate_error_report(analyzer):
     print(f"误差分析报告已保存为: {report_path}")
     
     return report
+
+
+def main():
+    """
+    运行检测误差分析全流程：
+    1) 读取 processed_data.csv
+    2) 估计测量噪声
+    3) 误差率分析（假阳/假阴）
+    4) 通过区间删失AFT模型取得各BMI组最佳时点作为 true_times，进行蒙特卡洛模拟
+    5) 生成可视化与报告
+    """
+    from interval_censored_survival_model import IntervalCensoredSurvivalModel
+
+    print("NIPT 检测误差分析 - 开始")
+    output_dir = os.path.join(SCRIPT_DIR, 'loglogistic_aft_results')
+    os.makedirs(output_dir, exist_ok=True)
+
+    # 1) 读取数据
+    data_file = os.path.join(SCRIPT_DIR, 'processed_data.csv')
+    raw_df = pd.read_csv(data_file)
+
+    # 2) 估计噪声
+    analyzer = DetectionErrorAnalyzer(output_dir=output_dir)
+    noise_summary, noise_df = analyzer.estimate_measurement_noise(
+        raw_df,
+        col_woman='孕妇代码',
+        col_y='Y染色体浓度',
+        col_week='孕周_标准化',
+        smoothing_window=3,
+    )
+
+    # 3) 误差率分析
+    error_summary, error_df = analyzer.analyze_detection_errors(
+        raw_df,
+        col_woman='孕妇代码',
+        col_y='Y染色体浓度',
+        noise_level=noise_summary['噪声水平']['平滑法']['均值'] if '噪声水平' in noise_summary else None,
+    )
+
+    # 4) 区间删失AFT模型获取各组最佳时点
+    model = IntervalCensoredSurvivalModel()
+    model.load_and_prepare_data(data_file)
+    model.fit_aft_model(distribution='loglogistic')
+    model.perform_bmi_clustering(n_clusters=4)
+    model.determine_optimal_timing(success_rate=0.9)
+    bmi_groups = model.bmi_groups.copy()
+    optimal_timings = model.optimal_timings.copy()
+    # true_times 顺序与 bmi_groups 行顺序一致（组别1..k）
+    true_times = optimal_timings.sort_values('组别')['最佳时点'].values
+
+    # 5) 蒙特卡洛模拟
+    sim_summary, sim_df = analyzer.monte_carlo_simulation(
+        true_times=true_times,
+        bmi_groups=bmi_groups.sort_values('组别'),
+        n_simulations=1000,
+        noise_level=noise_summary['噪声水平']['平滑法']['均值'] if '噪声水平' in noise_summary else None,
+    )
+
+    # 6) 可视化与报告
+    create_error_visualizations(analyzer, noise_df, error_df, sim_df)
+    generate_error_report(analyzer)
+
+    print("\n=== 检测误差分析完成 ===")
+    print("所有结果已保存到子目录:", os.path.relpath(analyzer.error_dir, SCRIPT_DIR))
+
+
+if __name__ == '__main__':
+    main()
