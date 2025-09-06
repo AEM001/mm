@@ -15,18 +15,30 @@ from sklearn.metrics import silhouette_score, calinski_harabasz_score, davies_bo
 from sklearn.decomposition import PCA
 from scipy import stats
 import warnings
+import os
 warnings.filterwarnings('ignore')
 
 # 导入GAMM预测器
 from gamm_y_chromosome_prediction import GAMMYChromosomePredictor
 
 # 设置中文字体
-plt.rcParams['font.sans-serif'] = ['SimHei', 'Microsoft YaHei']
-plt.rcParams['axes.unicode_minus'] = False
+try:
+    import sys
+    import os
+    sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+    from set_chinese_font import set_chinese_font
+    set_chinese_font()
+except:
+    # 如果中文字体设置失败，使用默认字体
+    plt.rcParams['font.sans-serif'] = ['DejaVu Sans']
+    plt.rcParams['axes.unicode_minus'] = False
 
 class BMISegmentationAnalyzer:
     """
-    基于GAMM预测结果的BMI分段分析器
+    基于GAMM预测结果的一维K-Means无重叠BMI分段分析器
+    
+    该分析器使用GAMM预测的Y染色体浓度达标孕周作为唯一聚类依据，
+    通过一维K-Means算法实现无重叠的BMI分组，确保分组有序且边界清晰。
     """
     
     def __init__(self, output_dir='./output/'):
@@ -39,9 +51,14 @@ class BMISegmentationAnalyzer:
             输出目录路径
         """
         self.output_dir = output_dir
+        # 创建输出目录（如果不存在）
+        os.makedirs(output_dir, exist_ok=True)
         self.gamm_predictor = GAMMYChromosomePredictor()
-        self.scaler = StandardScaler()
-        self.kmeans_model = None
+        self.scaler = StandardScaler()  # 保留用于其他可能的标准化需求
+        
+        # 一维聚类相关属性
+        self.cluster_centers = None  # 一维聚类中心
+        self.split_points = None     # 聚类分割点
         self.cluster_results = None
         self.optimal_k = None
         self.bmi_segments = None
@@ -114,8 +131,8 @@ class BMISegmentationAnalyzer:
         """
         print("\n=== GAMM模型训练 ===")
         
-        # 训练GAMM模型（不使用随机效应以简化模型）
-        self.gamm_predictor.fit_gamm_model(X, y, patient_ids=None)
+        # 训练GAMM模型
+        self.gamm_predictor.fit_gamm_model(X, y, patient_ids=target_df['孕妇代码'])
         
         # 生成预测
         predictions = self.gamm_predictor.predict(X)
@@ -217,9 +234,9 @@ class BMISegmentationAnalyzer:
         
         return optimal_k
     
-    def perform_clustering(self, prediction_df, optimal_k=None):
+    def perform_one_dimensional_clustering(self, prediction_df, optimal_k=None):
         """
-        执行基于预测达标孕周的K-Means++聚类
+        执行基于BMI和预测达标孕周的二维K-Means聚类
         
         Parameters:
         -----------
@@ -233,49 +250,248 @@ class BMISegmentationAnalyzer:
         pd.DataFrame
             包含聚类结果的数据框
         """
-        print("\n=== 基于预测达标孕周的K-Means++聚类分析 ===")
+        print("\n=== 基于BMI和预测达标孕周的二维K-Means聚类分析 ===")
         
-        # 准备聚类特征：仅使用预测达标孕周
-        clustering_data = prediction_df[['预测达标孕周']].values
-        
-        # 标准化聚类数据
-        clustering_data_scaled = self.scaler.fit_transform(clustering_data)
+        # 准备聚类特征：使用BMI标准化值和预测达标孕周
+        clustering_features = prediction_df[['BMI_标准化', '预测达标孕周']].values
         
         # 确定最优聚类数量
         if optimal_k is None:
-            optimal_k = self.determine_optimal_clusters(clustering_data_scaled)
+            optimal_k = self.determine_optimal_clusters(clustering_features)
         
         self.optimal_k = optimal_k
         
-        # 执行K-Means++聚类
-        self.kmeans_model = KMeans(n_clusters=optimal_k, init='k-means++', random_state=42, n_init=10)
-        cluster_labels = self.kmeans_model.fit_predict(clustering_data_scaled)
+        # 执行二维K-Means聚类
+        kmeans = KMeans(n_clusters=optimal_k, init='k-means++', random_state=42, n_init=10)
+        cluster_labels = kmeans.fit_predict(clustering_features)
+        
+        # 保存聚类结果到类属性
+        self.cluster_centers = kmeans.cluster_centers_
         
         # 添加聚类结果到数据框
         result_df = prediction_df.copy()
         result_df['聚类标签'] = cluster_labels
         
         # 计算聚类质量指标
-        silhouette_avg = silhouette_score(clustering_data_scaled, cluster_labels)
-        calinski_score = calinski_harabasz_score(clustering_data_scaled, cluster_labels)
-        davies_bouldin = davies_bouldin_score(clustering_data_scaled, cluster_labels)
+        silhouette_avg = silhouette_score(clustering_features, cluster_labels)
+        calinski_score = calinski_harabasz_score(clustering_features, cluster_labels)
+        davies_bouldin = davies_bouldin_score(clustering_features, cluster_labels)
         
-        print(f"\n聚类质量评估:")
+        print(f"\n二维聚类质量评估:")
         print(f"聚类数量: {optimal_k}")
         print(f"轮廓系数: {silhouette_avg:.3f}")
         print(f"Calinski-Harabasz指数: {calinski_score:.1f}")
         print(f"Davies-Bouldin指数: {davies_bouldin:.3f}")
+        print(f"聚类中心 (BMI, 预测达标孕周):")
+        for i, center in enumerate(self.cluster_centers):
+            print(f"  群组{i+1}: ({center[0]:.3f}, {center[1]:.3f})")
         
-        # 按聚类标签排序，便于分析BMI区间
-        result_df = result_df.sort_values(['聚类标签', '预测达标孕周'])
+        # 输出各群组的特征范围
+        print("\n各群组特征范围:")
+        for i in range(optimal_k):
+            cluster_data = result_df[result_df['聚类标签'] == i]
+            bmi_range = f"[{cluster_data['BMI_标准化'].min():.3f}, {cluster_data['BMI_标准化'].max():.3f}]"
+            pred_range = f"[{cluster_data['预测达标孕周'].min():.3f}, {cluster_data['预测达标孕周'].max():.3f}]"
+            print(f"  群组{i+1}: BMI {bmi_range}, 预测达标孕周 {pred_range}, 样本数: {len(cluster_data)}")
         
         self.cluster_results = result_df
         
         return result_df
     
+    def kmeans_1d(self, data, k, max_iter=100, tol=1e-4):
+        """
+        一维K-Means聚类算法实现
+        
+        Parameters:
+        -----------
+        data : np.ndarray
+            一维数据数组
+        k : int
+            聚类数量
+        max_iter : int
+            最大迭代次数
+        tol : float
+            收敛容忍度
+            
+        Returns:
+        --------
+        tuple
+            (聚类标签, 聚类中心, 分割点)
+        """
+        n = len(data)
+        
+        # 初始化聚类中心：使用K-Means++策略
+        centers = self.initialize_centers_1d(data, k)
+        
+        for iteration in range(max_iter):
+            # E步：分配数据点到最近的聚类中心
+            labels = np.zeros(n, dtype=int)
+            for i in range(n):
+                distances = [abs(data[i] - center) for center in centers]
+                labels[i] = np.argmin(distances)
+            
+            # M步：更新聚类中心
+            new_centers = []
+            for j in range(k):
+                cluster_points = data[labels == j]
+                if len(cluster_points) > 0:
+                    new_centers.append(np.mean(cluster_points))
+                else:
+                    # 如果某个聚类为空，保持原中心
+                    new_centers.append(centers[j])
+            
+            # 检查收敛
+            center_shift = sum(abs(new_centers[j] - centers[j]) for j in range(k))
+            if center_shift < tol:
+                break
+                
+            centers = new_centers
+        
+        # 计算分割点
+        sorted_centers = sorted(centers)
+        split_points = []
+        for i in range(len(sorted_centers) - 1):
+            split_point = (sorted_centers[i] + sorted_centers[i + 1]) / 2
+            split_points.append(split_point)
+        
+        return labels, centers, split_points
+    
+    def initialize_centers_1d(self, data, k):
+        """
+        使用K-Means++策略初始化一维聚类中心
+        
+        Parameters:
+        -----------
+        data : np.ndarray
+            一维数据数组
+        k : int
+            聚类数量
+            
+        Returns:
+        --------
+        list
+            初始聚类中心列表
+        """
+        np.random.seed(42)  # 确保可重复性
+        centers = []
+        
+        # 随机选择第一个中心
+        centers.append(np.random.choice(data))
+        
+        # 选择剩余的k-1个中心
+        for _ in range(k - 1):
+            distances = []
+            for point in data:
+                min_dist = min(abs(point - center) for center in centers)
+                distances.append(min_dist ** 2)
+            
+            # 按距离平方的概率选择下一个中心
+            distances = np.array(distances)
+            probabilities = distances / distances.sum()
+            cumulative_probs = np.cumsum(probabilities)
+            
+            r = np.random.random()
+            for i, prob in enumerate(cumulative_probs):
+                if r <= prob:
+                    centers.append(data[i])
+                    break
+        
+        return centers
+    
+    def calculate_wcss_1d(self, data, labels, centers):
+        """
+        计算一维聚类的类内平方和(WCSS)
+        
+        Parameters:
+        -----------
+        data : np.ndarray
+            一维数据数组
+        labels : np.ndarray
+            聚类标签
+        centers : list
+            聚类中心列表
+            
+        Returns:
+        --------
+        float
+            类内平方和
+        """
+        wcss = 0
+        for i, center in enumerate(centers):
+            cluster_points = data[labels == i]
+            wcss += np.sum((cluster_points - center) ** 2)
+        return wcss
+    
+    def determine_optimal_clusters_1d(self, data, max_k=10):
+        """
+        确定一维聚类的最优聚类数量
+        
+        Parameters:
+        -----------
+        data : np.ndarray
+            一维数据数组
+        max_k : int
+            最大聚类数量
+            
+        Returns:
+        --------
+        int
+            最优聚类数量
+        """
+        print("\n=== 确定一维聚类最优数量 ===")
+        
+        k_range = range(2, min(max_k + 1, len(np.unique(data)) + 1))
+        wcss_scores = []
+        
+        for k in k_range:
+            labels, centers, _ = self.kmeans_1d(data, k)
+            wcss = self.calculate_wcss_1d(data, labels, centers)
+            wcss_scores.append(wcss)
+        
+        # 使用肘部法则选择最优k
+        # 计算二阶差分来找到肘部
+        if len(wcss_scores) >= 3:
+            second_diffs = []
+            for i in range(1, len(wcss_scores) - 1):
+                second_diff = wcss_scores[i-1] - 2*wcss_scores[i] + wcss_scores[i+1]
+                second_diffs.append(second_diff)
+            
+            # 选择二阶差分最大的点作为肘部
+            elbow_idx = np.argmax(second_diffs) + 1  # +1因为second_diffs从索引1开始
+            optimal_k = k_range[elbow_idx]
+        else:
+            # 如果数据点太少，默认选择中间值
+            optimal_k = k_range[len(k_range) // 2]
+        
+        print(f"各聚类数量的WCSS:")
+        for i, k in enumerate(k_range):
+            print(f"k={k}: WCSS={wcss_scores[i]:.3f}")
+        
+        print(f"\n推荐的最优聚类数量: {optimal_k}")
+        
+        return optimal_k
+    
+    def perform_clustering(self, prediction_df, optimal_k=None):
+        """
+        执行聚类分析（调用一维聚类方法）
+        
+        Parameters:
+        -----------
+        prediction_df : pd.DataFrame
+            包含预测结果的数据框
+        optimal_k : int, optional
+            聚类数量，如果为None则自动确定
+            
+        Returns:
+        --------
+        pd.DataFrame
+            包含聚类结果的数据框
+        """
+        return self.perform_one_dimensional_clustering(prediction_df, optimal_k)
+    
     def analyze_bmi_segments(self, cluster_df):
         """
-        分析基于预测达标孕周聚类的BMI分段结果
+        分析基于BMI和预测达标孕周的二维K-Means聚类结果
         
         Parameters:
         -----------
@@ -285,16 +501,17 @@ class BMISegmentationAnalyzer:
         Returns:
         --------
         dict
-            BMI分段分析结果
+            聚类分段分析结果
         """
-        print("\n=== 基于预测达标孕周的BMI分段分析 ===")
+        print("\n=== 基于BMI和预测达标孕周的二维K-Means聚类分析 ===")
         
         segments = {}
         
         # 按聚类标签排序，确保分析顺序
         cluster_ids = sorted(cluster_df['聚类标签'].unique())
         
-        print(f"\n共识别出 {len(cluster_ids)} 个群组，基于预测达标孕周进行分类")
+        print(f"\n共识别出 {len(cluster_ids)} 个群组，基于BMI标准化值和预测达标孕周进行二维聚类")
+        print("群组基于两个维度的综合特征进行划分")
         
         for i, cluster_id in enumerate(cluster_ids):
             cluster_data = cluster_df[cluster_df['聚类标签'] == cluster_id]
@@ -593,35 +810,36 @@ class BMISegmentationAnalyzer:
     
     def visualize_clustering_results(self, cluster_df):
         """
-        可视化聚类结果
+        可视化二维聚类结果
         
         Parameters:
         -----------
         cluster_df : pd.DataFrame
             包含聚类结果的数据框
         """
-        print("\n=== 聚类结果可视化 ===")
+        print("\n=== 二维聚类结果可视化 ===")
         
         # 创建综合可视化
         fig = plt.figure(figsize=(20, 15))
         
-        # 1. 主要聚类散点图 - 基于预测达标孕周的一维聚类
+        # 1. 主要聚类散点图 - 基于BMI和预测达标孕周的二维聚类
         ax1 = plt.subplot(3, 3, (1, 2))
-        scatter = ax1.scatter(cluster_df['预测达标孕周'], cluster_df['BMI_标准化'], 
+        scatter = ax1.scatter(cluster_df['BMI_标准化'], cluster_df['预测达标孕周'], 
                              c=cluster_df['聚类标签'], cmap='viridis', 
                              s=60, alpha=0.7, edgecolors='black', linewidth=0.5)
-        ax1.set_xlabel('预测达标孕周 (标准化)', fontweight='bold')
-        ax1.set_ylabel('BMI (标准化)', fontweight='bold')
-        ax1.set_title('基于预测达标孕周的聚类结果', fontweight='bold', fontsize=14)
+        ax1.set_xlabel('BMI (标准化)', fontweight='bold')
+        ax1.set_ylabel('预测达标孕周 (标准化)', fontweight='bold')
+        ax1.set_title('基于BMI和预测达标孕周的二维K-Means聚类结果', fontweight='bold', fontsize=14)
         ax1.grid(True, alpha=0.3)
         
-        # 添加聚类中心 - 只有一维数据
-        centers = self.kmeans_model.cluster_centers_
-        # 为每个聚类中心在y轴上找到对应的BMI均值
-        for i, center in enumerate(centers):
-            cluster_data = cluster_df[cluster_df['聚类标签'] == i]
-            bmi_mean = cluster_data['BMI_标准化'].mean()
-            ax1.scatter(center[0], bmi_mean, c='red', marker='x', s=200, linewidths=3)
+        # 添加二维聚类中心
+        cluster_ids = sorted(cluster_df['聚类标签'].unique())
+        if hasattr(self, 'cluster_centers') and self.cluster_centers is not None:
+            for i, center in enumerate(self.cluster_centers):
+                ax1.scatter(center[0], center[1], c='red', marker='x', s=200, linewidths=3)
+                ax1.text(center[0], center[1] + 0.1, f'中心{i+1}', ha='center', va='bottom', 
+                        fontsize=10, color='red', fontweight='bold')
+        
         ax1.scatter([], [], c='red', marker='x', s=200, linewidths=3, label='聚类中心')
         ax1.legend()
         
@@ -774,8 +992,8 @@ class BMISegmentationAnalyzer:
         # 聚类质量
         if self.cluster_results is not None:
             clustering_data = self.cluster_results[['预测达标孕周']].values
-            clustering_data_scaled = self.scaler.transform(clustering_data)
-            silhouette_avg = silhouette_score(clustering_data_scaled, self.cluster_results['聚类标签'])
+            # 对于一维聚类，直接使用原始数据计算轮廓系数
+            silhouette_avg = silhouette_score(clustering_data, self.cluster_results['聚类标签'])
             report.append(f"- 聚类轮廓系数: {silhouette_avg:.3f}")
         
         report_text = "\n".join(report)
@@ -830,7 +1048,7 @@ def main():
     analyzer = BMISegmentationAnalyzer()
     
     # 数据路径
-    data_path = 'processed_data.csv'
+    data_path = '/Users/Mac/Downloads/mm/3/processed_data.csv'
     
     try:
         # 1. 加载和准备数据

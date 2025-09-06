@@ -25,7 +25,7 @@ import numpy as np
 
 # 项目根路径
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
-PROJECT_ROOT = os.path.dirname(os.path.dirname(SCRIPT_DIR))
+PROJECT_ROOT = os.path.dirname(SCRIPT_DIR)
 if PROJECT_ROOT not in sys.path:
     sys.path.insert(0, PROJECT_ROOT)
 
@@ -40,7 +40,7 @@ except Exception:
 from kmeans_bmi_segmentation import BMISegmentationAnalyzer
 
 # 导入问题二的检测误差分析工具
-TOOLS_DIR_Q2 = os.path.join(os.path.dirname(SCRIPT_DIR), '2')
+TOOLS_DIR_Q2 = os.path.join(PROJECT_ROOT, '2')
 if TOOLS_DIR_Q2 not in sys.path:
     sys.path.insert(0, TOOLS_DIR_Q2)
 from detection_error_analysis import (
