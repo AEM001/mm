@@ -252,6 +252,7 @@ class GAMMYChromosomePredictor:
         使用Python方法进行显著性检验（基于相关性和随机森林重要性）
         """
         significant_features = []
+        significance_results = []
         
         for i, feature_name in enumerate(self.feature_names[:X.shape[1]]):
             # 计算相关系数和p值
@@ -260,20 +261,34 @@ class GAMMYChromosomePredictor:
             
             # 使用随机森林评估特征重要性
             rf = RandomForestRegressor(n_estimators=50, random_state=42)
-            # 确保feature_values是numpy数组
-            if hasattr(feature_values, 'values'):
-                feature_array = feature_values.values
-            else:
-                feature_array = np.array(feature_values)
-            rf.fit(feature_array.reshape(-1, 1), y)
+            rf.fit(np.array(feature_values).reshape(-1, 1), y)
             importance = rf.feature_importances_[0]
             
+            # 计算t统计量
+            n = len(feature_values)
+            t_stat = corr * np.sqrt((n-2)/(1-corr**2)) if abs(corr) < 1 else np.inf
+            
             # 综合判断：p值显著或重要性较高
-            if p_value < alpha or importance > 0.1:
+            is_significant = p_value < alpha or importance > 0.1
+            if is_significant:
                 significant_features.append(feature_name)
                 print(f"{feature_name}: 显著 (相关性p值: {p_value:.4f}, 重要性: {importance:.4f})")
             else:
                 print(f"{feature_name}: 不显著 (相关性p值: {p_value:.4f}, 重要性: {importance:.4f})")
+            
+            # 保存结果
+            significance_results.append({
+                '特征名称': feature_name,
+                '相关系数': corr,
+                'p值': p_value,
+                't统计量': t_stat,
+                '随机森林重要性': importance,
+                '是否显著': '是' if is_significant else '否',
+                '显著性水平': alpha
+            })
+        
+        # 保存显著性检验结果到类属性
+        self.significance_results = pd.DataFrame(significance_results)
         
         return significant_features
     
@@ -343,7 +358,7 @@ class GAMMYChromosomePredictor:
         axes[1, 2].set_title('达标状态分布')
         
         plt.tight_layout()
-        plt.savefig('d:/edgedownload/mm-1try/gamm_eda_analysis.png', dpi=300, bbox_inches='tight')
+        plt.savefig('./gamm_eda_analysis.png', dpi=300, bbox_inches='tight')
         plt.show()
         
         # 保存统计结果
@@ -638,7 +653,7 @@ class GAMMYChromosomePredictor:
         axes[1, 1].set_title('残差分布')
         
         plt.tight_layout()
-        plt.savefig('d:/edgedownload/mm-1try/gamm_model_diagnostics.png', dpi=300, bbox_inches='tight')
+        plt.savefig('./gamm_model_diagnostics.png', dpi=300, bbox_inches='tight')
         plt.show()
         
         # 计算诊断统计量
@@ -712,6 +727,204 @@ class GAMMYChromosomePredictor:
         
         return results_df
     
+    def plot_partial_effects(self, X, y, output_dir='./'):
+        """
+        生成每个自变量的偏效应图像
+        
+        Parameters:
+        -----------
+        X : pd.DataFrame
+            特征矩阵
+        y : pd.Series
+            目标变量
+        output_dir : str
+            输出目录路径
+        """
+        print("\n正在生成偏效应图像...")
+        
+        # 确定要绘制的特征
+        features_to_plot = self.significant_features if hasattr(self, 'significant_features') and self.significant_features else self.feature_names[:X.shape[1]]
+        n_features = len(features_to_plot)
+        
+        if n_features == 0:
+            print("没有特征需要绘制偏效应图")
+            return
+        
+        # 计算子图布局
+        n_cols = min(3, n_features)
+        n_rows = (n_features + n_cols - 1) // n_cols
+        
+        fig, axes = plt.subplots(n_rows, n_cols, figsize=(5*n_cols, 4*n_rows))
+        if n_features == 1:
+            axes = [axes]
+        elif n_rows == 1:
+            axes = axes.reshape(1, -1)
+        
+        fig.suptitle('各自变量偏效应图', fontsize=16, y=0.98)
+        
+        for idx, feature_name in enumerate(features_to_plot):
+            row = idx // n_cols
+            col = idx % n_cols
+            ax = axes[row, col] if n_rows > 1 else axes[col]
+            
+            # 获取特征在原始特征列表中的索引
+            feature_idx = self.feature_names.index(feature_name) if feature_name in self.feature_names else idx
+            
+            if feature_idx < X.shape[1]:
+                feature_values = X.iloc[:, feature_idx] if hasattr(X, 'iloc') else X[:, feature_idx]
+                
+                # 创建特征值的网格用于预测
+                feature_range = np.linspace(feature_values.min(), feature_values.max(), 100)
+                
+                if self.use_r_gamm and self.model is not None:
+                    # 使用R GAMM模型进行偏效应预测
+                    try:
+                        partial_effects = self._compute_partial_effects_r(feature_idx, feature_range, X)
+                    except:
+                        partial_effects = self._compute_partial_effects_python(feature_idx, feature_range, X, y)
+                else:
+                    # 使用Python模型进行偏效应预测
+                    partial_effects = self._compute_partial_effects_python(feature_idx, feature_range, X, y)
+                
+                # 绘制偏效应曲线
+                ax.plot(feature_range, partial_effects, 'b-', linewidth=2, label='偏效应')
+                
+                # 添加数据点的散点图
+                ax.scatter(feature_values, y, alpha=0.3, s=20, color='gray', label='观测值')
+                
+                # 添加平滑趋势线
+                try:
+                    from scipy.interpolate import UnivariateSpline
+                    # 对数据进行排序
+                    sorted_indices = np.argsort(feature_values)
+                    sorted_x = feature_values.iloc[sorted_indices] if hasattr(feature_values, 'iloc') else feature_values[sorted_indices]
+                    sorted_y = y.iloc[sorted_indices] if hasattr(y, 'iloc') else y[sorted_indices]
+                    
+                    # 创建平滑样条
+                    spline = UnivariateSpline(sorted_x, sorted_y, s=len(sorted_x)*0.1)
+                    smooth_y = spline(feature_range)
+                    ax.plot(feature_range, smooth_y, 'r--', alpha=0.7, linewidth=1.5, label='平滑趋势')
+                except:
+                    pass
+                
+                ax.set_xlabel(feature_name)
+                ax.set_ylabel('达标孕周 (标准化)')
+                ax.set_title(f'{feature_name}的偏效应')
+                ax.grid(True, alpha=0.3)
+                ax.legend(fontsize=8)
+                
+                # 添加相关系数信息
+                if hasattr(self, 'significance_results'):
+                    sig_row = self.significance_results[self.significance_results['特征名称'] == feature_name]
+                    if not sig_row.empty:
+                        corr = sig_row.iloc[0]['相关系数']
+                        p_val = sig_row.iloc[0]['p值']
+                        ax.text(0.05, 0.95, f'r={corr:.3f}\np={p_val:.3f}', 
+                               transform=ax.transAxes, fontsize=8, 
+                               verticalalignment='top', 
+                               bbox=dict(boxstyle='round', facecolor='white', alpha=0.8))
+        
+        # 隐藏多余的子图
+        for idx in range(n_features, n_rows * n_cols):
+            row = idx // n_cols
+            col = idx % n_cols
+            if n_rows > 1:
+                axes[row, col].set_visible(False)
+            elif n_cols > 1:
+                axes[col].set_visible(False)
+        
+        plt.tight_layout()
+        
+        # 保存图像
+        output_path = f"{output_dir}gamm_partial_effects.png"
+        plt.savefig(output_path, dpi=300, bbox_inches='tight')
+        print(f"偏效应图像已保存到: {output_path}")
+        plt.show()
+        
+        return output_path
+    
+    def _compute_partial_effects_r(self, feature_idx, feature_range, X):
+        """
+        使用R GAMM模型计算偏效应
+        """
+        try:
+            # 创建预测数据，其他特征设为均值
+            n_points = len(feature_range)
+            pred_data = {}
+            
+            for i in range(X.shape[1]):
+                if i == feature_idx:
+                    pred_data[f'x{i+1}'] = feature_range
+                else:
+                    mean_val = X.iloc[:, i].mean() if hasattr(X, 'iloc') else X[:, i].mean()
+                    pred_data[f'x{i+1}'] = [mean_val] * n_points
+            
+            # 转换为R数据框
+            r_pred_data = robjects.DataFrame(pred_data)
+            
+            # 进行预测
+            predictions = mgcv.predict_gam(self.model, r_pred_data)
+            
+            return np.array(predictions)
+            
+        except Exception as e:
+            print(f"R偏效应计算失败: {e}")
+            return self._compute_partial_effects_python(feature_idx, feature_range, X, None)
+    
+    def _compute_partial_effects_python(self, feature_idx, feature_range, X, y):
+        """
+        使用Python模型计算偏效应
+        """
+        if self.model is None:
+            # 如果没有训练好的模型，使用简单的局部回归
+            feature_values = X.iloc[:, feature_idx] if hasattr(X, 'iloc') else X[:, feature_idx]
+            
+            # 使用局部加权回归(LOWESS)进行平滑
+            try:
+                from statsmodels.nonparametric.smoothers_lowess import lowess
+                smoothed = lowess(y, feature_values, frac=0.3)
+                
+                # 插值到新的特征范围
+                from scipy.interpolate import interp1d
+                interp_func = interp1d(smoothed[:, 0], smoothed[:, 1], 
+                                     kind='linear', fill_value='extrapolate')
+                return interp_func(feature_range)
+            except:
+                # 如果LOWESS失败，使用简单的线性插值
+                sorted_indices = np.argsort(feature_values)
+                sorted_x = feature_values.iloc[sorted_indices] if hasattr(feature_values, 'iloc') else feature_values[sorted_indices]
+                sorted_y = y.iloc[sorted_indices] if hasattr(y, 'iloc') else y[sorted_indices]
+                
+                from scipy.interpolate import interp1d
+                interp_func = interp1d(sorted_x, sorted_y, kind='linear', fill_value='extrapolate')
+                return interp_func(feature_range)
+        
+        elif isinstance(self.model, dict):  # Python替代模型
+            # 创建预测数据
+            n_points = len(feature_range)
+            pred_X = np.zeros((n_points, X.shape[1]))
+            
+            # 设置其他特征为均值
+            for i in range(X.shape[1]):
+                if i == feature_idx:
+                    pred_X[:, i] = feature_range
+                else:
+                    pred_X[:, i] = X.iloc[:, i].mean() if hasattr(X, 'iloc') else X[:, i].mean()
+            
+            # 使用随机森林模型预测
+            rf_pred = self.model['rf'].predict(pred_X)
+            
+            # 使用岭回归模型预测
+            pred_X_poly = self.model['poly_features'].transform(pred_X)
+            ridge_pred = self.model['ridge'].predict(pred_X_poly)
+            
+            # 集成预测
+            return 0.7 * rf_pred + 0.3 * ridge_pred
+        
+        else:
+            # 其他情况，返回零效应
+            return np.zeros_like(feature_range)
+    
     def save_results(self, output_path):
         """
         保存分析结果
@@ -722,6 +935,20 @@ class GAMMYChromosomePredictor:
             输出文件路径
         """
         print(f"\n保存结果到: {output_path}")
+        
+        # 保存显著性检验结果表格
+        if hasattr(self, 'significance_results'):
+            significance_table_path = output_path.replace('.md', '_significance_table.csv')
+            self.significance_results.to_csv(significance_table_path, index=False, encoding='utf-8-sig')
+            print(f"显著性检验结果表格已保存到: {significance_table_path}")
+            
+            # 同时保存为Excel格式
+            excel_path = significance_table_path.replace('.csv', '.xlsx')
+            try:
+                self.significance_results.to_excel(excel_path, index=False)
+                print(f"显著性检验结果表格(Excel)已保存到: {excel_path}")
+            except ImportError:
+                print("未安装openpyxl，跳过Excel格式保存")
         
         # 创建结果报告
         report = f"""
@@ -738,6 +965,16 @@ class GAMMYChromosomePredictor:
 - 达标样本数: {self.results.get('eda_stats', {}).get('达标样本数', 'N/A')}
 - 达标比例: {self.results.get('eda_stats', {}).get('达标比例', 'N/A'):.1f}%
 
+## 特征显著性检验结果
+"""
+        
+        # 添加显著性检验结果到报告
+        if hasattr(self, 'significance_results'):
+            report += "\n### 显著性检验统计表\n\n"
+            report += self.significance_results.to_string(index=False)
+            report += "\n\n"
+        
+        report += f"""
 ## 模型诊断
 - 残差正态性检验p值: {self.results.get('diagnostics', {}).get('shapiro_p', 'N/A')}
 - 模型拟合度: {'良好' if self.results.get('r_squared', 0) > 0.7 else '一般' if self.results.get('r_squared', 0) > 0.5 else '需要改进'}
@@ -768,7 +1005,7 @@ def main():
     predictor = GAMMYChromosomePredictor(use_r_gamm=True)
     
     # 加载数据
-    data_path = 'd:/edgedownload/mm-1try/processed_data.csv'
+    data_path = r'c:\Users\Lu\Desktop\最终版本代码\问题三\processed_data.csv'
     df = predictor.load_and_preprocess_data(data_path)
     
     # 提取目标变量
@@ -803,6 +1040,9 @@ def main():
     # 模型诊断
     predictor.plot_model_diagnostics(X_train, y_train)
     
+    # 生成偏效应图像
+    predictor.plot_partial_effects(X_train, y_train)
+    
     # 测试集评估
     if len(X_test) > 0:
         y_pred_test = predictor.predict(X_test)
@@ -833,13 +1073,16 @@ def main():
     print(predictions_df[['BMI_标准化', '预测达标孕周', '风险等级']])
     
     # 保存结果
-    predictor.save_results('d:/edgedownload/mm-1try/gamm_analysis_report.md')
+    predictor.save_results('./gamm_analysis_report.md')
     
     print("\n分析完成！")
     print("生成的文件:")
     print("- gamm_eda_analysis.png: 探索性数据分析图")
     print("- gamm_model_diagnostics.png: 模型诊断图")
+    print("- gamm_partial_effects.png: 各自变量偏效应图")
     print("- gamm_analysis_report.md: 分析报告")
+    print("- gamm_analysis_report_significance_table.csv: 特征显著性检验结果表格")
+    print("- gamm_analysis_report_significance_table.xlsx: 特征显著性检验结果表格(Excel格式)")
 
 if __name__ == "__main__":
     main()

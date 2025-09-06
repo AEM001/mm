@@ -20,21 +20,12 @@ from scipy import stats
 from scipy.optimize import minimize_scalar
 from sklearn.cluster import KMeans
 from sklearn.preprocessing import StandardScaler
-import sys
-import os
 import warnings
 warnings.filterwarnings('ignore')
-# 项目路径与中文字体
-sys.path.append('/Users/Mac/Downloads/mm')
-from set_chinese_font import set_chinese_font
-set_chinese_font()
 
-# 导入检测误差分析模块
-from detection_error_analysis import (
-    DetectionErrorAnalyzer, 
-    create_error_visualizations, 
-    generate_error_report
-)
+# 设置中文字体
+plt.rcParams['font.sans-serif'] = ['SimHei', 'Microsoft YaHei']
+plt.rcParams['axes.unicode_minus'] = False
 
 class IntervalCensoredSurvivalModel:
     """
@@ -43,24 +34,12 @@ class IntervalCensoredSurvivalModel:
     
     def __init__(self):
         self.data = None
-        self.raw_df = None
         self.model_params = None
         self.bmi_groups = None
         self.optimal_timings = None
-        self.output_dir = '.'
-        self.detection_error_dir = None
-        self.error_metrics = None
-        self.error_results = None
-        # 列名记录（便于误差分析复用）
-        self.col_bmi = None
-        self.col_age = None
-        self.col_week = None
         # 时间标准化参数（假设：均值=15周，标准差=3周）
         self.time_mean = 16.846
         self.time_std = 4.076
-        # 阈值设定（题目背景：4%阈值，使用logit变换）
-        self.threshold_percentage = 0.04
-        self.threshold_logit = np.log(self.threshold_percentage / (1 - self.threshold_percentage))
     
     def standardized_to_original_time(self, standardized_time):
         """将标准化时间转换为原始孕周"""
@@ -83,11 +62,6 @@ class IntervalCensoredSurvivalModel:
         df = pd.read_csv(file_path)
         print(f"原始数据形状: {df.shape}")
         print(f"可用的列: {list(df.columns)}")
-        # 设置输出目录为数据文件所在目录
-        try:
-            self.output_dir = os.path.dirname(file_path) or '.'
-        except Exception:
-            self.output_dir = '.'
         
         # 检查关键列是否存在
         required_cols = ['孕妇代码', 'Y染色体浓度']
@@ -119,9 +93,6 @@ class IntervalCensoredSurvivalModel:
             if 'BMI_标准化' in df_clean.columns:
                 print(f"  BMI(标准化)范围: {df_clean['BMI_标准化'].min():.3f} - {df_clean['BMI_标准化'].max():.3f}")
         
-        # 保存逐次测量级别数据供检测误差分析复用
-        self.raw_df = df_clean.copy()
-
         df = df_clean
         
         # 构建区间删失数据
@@ -134,10 +105,6 @@ class IntervalCensoredSurvivalModel:
         week_col = '孕周_标准化' if '孕周_标准化' in df.columns else None
         
         print(f"使用的列名: BMI={bmi_col}, 年龄={age_col}, 孕周={week_col}")
-        # 记录列名
-        self.col_bmi = bmi_col
-        self.col_age = age_col
-        self.col_week = week_col
         
         for woman_code, woman_data in df.groupby('孕妇代码'):
             # 如果有孕周信息，按孕周排序
@@ -163,7 +130,8 @@ class IntervalCensoredSurvivalModel:
             
             # 判断删失类型 - 使用4%的Y染色体浓度作为达标标准（题目要求）
             # 4%的Logit变换: logit(0.04) = log(0.04/(1-0.04)) = log(0.04/0.96)
-            threshold = self.threshold_logit  # Logit变换后的阈值
+            threshold_percentage = 0.04
+            threshold = np.log(threshold_percentage / (1 - threshold_percentage))  # Logit变换后的阈值
             qualified_indices = np.where(y_concentrations >= threshold)[0]
             
             if len(qualified_indices) == 0:
@@ -229,9 +197,8 @@ class IntervalCensoredSurvivalModel:
         # 确保时间值为正数（对于对数变换）
         y = np.maximum(y, 0.1)  # 避免零值或负值
         
-        # 创建标准化器以便预测时使用
-        scaler = StandardScaler()
-        X_scaled = scaler.fit_transform(X.values)
+        # 数据已经是标准化后的，直接使用
+        X_scaled = X.values
         
         if distribution == 'weibull':
             # Weibull AFT模型的改进实现
@@ -387,7 +354,6 @@ class IntervalCensoredSurvivalModel:
                 'beta_bmi': beta1,
                 'beta_age': beta2,
                 'sigma': sigma,
-                'scaler': scaler,
                 'log_likelihood': -result.fun
             }
             
@@ -428,7 +394,6 @@ class IntervalCensoredSurvivalModel:
                     'beta_bmi': beta1,
                     'beta_age': beta2,
                     'sigma': sigma,
-                    'scaler': scaler,
                     'log_likelihood': None
                 }
                 
@@ -474,9 +439,9 @@ class IntervalCensoredSurvivalModel:
             max_time = self.data['事件时间估计'].max()
             time_points = np.linspace(min_time, max_time, 100)
             
-        # 使用训练时的标准化器对新数据进行标准化
+        # 数据已经是标准化后的，直接使用
         X = np.column_stack([bmi_values, age_values])
-        X_scaled = self.model_params['scaler'].transform(X)
+        X_scaled = X
         
         # 计算线性预测器
         linear_pred = (self.model_params['beta0'] + 
@@ -748,10 +713,10 @@ class IntervalCensoredSurvivalModel:
                     f'{rate:.1f}%', ha='center', va='bottom')
         
         plt.tight_layout()
-        plt.savefig(os.path.join(self.output_dir, 'interval_censored_survival_analysis_results.png'), dpi=300, bbox_inches='tight')
+        plt.savefig('./interval_censored_survival_analysis_results.png', dpi=300, bbox_inches='tight')
         plt.show()
         
-        print(f"结果图表已保存为: {os.path.join(self.output_dir, 'interval_censored_survival_analysis_results.png')}")
+        print("结果图表已保存为: interval_censored_survival_analysis_results.png")
     
     def generate_report(self):
         """
@@ -802,84 +767,13 @@ class IntervalCensoredSurvivalModel:
 """
         
         # 保存报告
-        report_path = os.path.join(self.output_dir, 'interval_censored_survival_analysis_report.md')
-        with open(report_path, 'w', encoding='utf-8') as f:
+        with open('./interval_censored_survival_analysis_report.md', 'w', encoding='utf-8') as f:
             f.write(report)
             
-        print(f"分析报告已保存为: {report_path}")
+        print("分析报告已保存为: interval_censored_survival_analysis_report.md")
         print(report)
         
         return report
-    
-    def perform_detection_error_analysis(self):
-        """
-        执行检测误差分析
-        
-        Returns:
-            dict: 误差分析结果汇总
-        """
-        print(f"\n=== 步骤6: 检测误差分析 ===")
-        
-        if self.raw_df is None:
-            print("警告: 没有逐次测量数据，跳过误差分析")
-            return None
-            
-        # 创建误差分析器
-        analyzer = DetectionErrorAnalyzer(
-            output_dir=self.output_dir,
-            threshold_logit=self.threshold_logit
-        )
-        
-        try:
-            # 1. 测量噪声估计
-            noise_summary, noise_df = analyzer.estimate_measurement_noise(
-                df=self.raw_df,
-                col_woman='孕妇代码',
-                col_y='Y染色体浓度',
-                col_week=self.col_week
-            )
-            
-            # 2. 检测误差分析
-            error_summary, error_df = analyzer.analyze_detection_errors(
-                df=self.raw_df,
-                col_woman='孕妇代码',
-                col_y='Y染色体浓度'
-            )
-            
-            # 3. 蒙特卡洛模拟
-            # 提取各BMI组的最佳时点作为"真实"达标时间
-            true_times = self.optimal_timings['最佳时点'].values if self.optimal_timings is not None else [15.0] * len(self.bmi_groups)
-            
-            sim_summary, sim_df = analyzer.monte_carlo_simulation(
-                true_times=true_times,
-                bmi_groups=self.bmi_groups,
-                n_simulations=1000
-            )
-            
-            # 4. 创建可视化
-            create_error_visualizations(analyzer, noise_df, error_df, sim_df)
-            
-            # 5. 生成报告
-            error_report = generate_error_report(analyzer)
-            
-            # 汇总所有结果
-            error_analysis_results = {
-                'noise_analysis': noise_summary,
-                'error_analysis': error_summary,
-                'simulation_results': sim_summary,
-                'analyzer': analyzer
-            }
-            
-            print(f"\n检测误差分析完成！")
-            print(f"结果已保存到目录: {analyzer.error_dir}")
-            
-            return error_analysis_results
-            
-        except Exception as e:
-            print(f"检测误差分析过程中出现错误: {str(e)}")
-            import traceback
-            traceback.print_exc()
-            return None
 
 
 def main():
@@ -895,9 +789,7 @@ def main():
     
     try:
         # 步骤1: 数据准备
-        # 使用脚本所在目录作为相对路径基准，确保可在任意工作目录运行
-        script_dir = os.path.dirname(os.path.abspath(__file__))
-        data_file = os.path.join(script_dir, 'processed_data.csv')
+        data_file = r'c:\Users\Lu\Desktop\最终版本代码\问题二\processed_data.csv'
         model.load_and_prepare_data(data_file)
         
         # 步骤2: 模型拟合（使用对数正态分布）
@@ -915,13 +807,8 @@ def main():
         # 步骤6: 生成报告
         model.generate_report()
         
-        # 步骤7: 检测误差分析
-        error_results = model.perform_detection_error_analysis()
-        
         print("\n=== 分析完成 ===")
-        print(f"所有结果文件已保存到目录: {model.output_dir}")
-        if error_results:
-            print(f"检测误差分析结果已保存到子目录: {error_results['analyzer'].error_dir}")
+        print("所有结果文件已保存到当前目录")
         
     except Exception as e:
         print(f"分析过程中出现错误: {str(e)}")
