@@ -173,6 +173,8 @@ class DetectionErrorAnalyzer:
         self.noise_metrics = {}
         self.error_rates = {}
         self.simulation_results = {}
+        # 报告上下文（用于动态描述分析依据/策略）
+        self.report_context = {}
         
     def estimate_measurement_noise(self, df, col_woman='孕妇代码', col_y='Y染色体浓度', 
                                  col_week=None, smoothing_window=3):
@@ -640,11 +642,13 @@ def generate_error_report(analyzer):
     """
     print("=== 生成误差分析报告 ===")
     
+    # 动态设置分析依据描述
+    analysis_basis = analyzer.report_context.get('analysis_basis', '区间删失生存模型分组')
     report = f"""# NIPT检测误差分析报告
 
 ## 1. 分析概述
 
-本报告分析NIPT检测过程中的测量误差及其对达标时间估计的影响，基于区间删失生存模型的结果进行误差传播分析。
+本报告分析NIPT检测过程中的测量误差及其对达标时间估计的影响，基于{analysis_basis}的结果进行误差传播分析。
 
 ## 2. 测量噪声分析
 
@@ -785,6 +789,8 @@ def run_error_analysis_with_strategy(strategy, data_file=None, output_suffix='')
     
     # 2) 估计噪声
     analyzer = DetectionErrorAnalyzer(output_dir=output_dir)
+    # 设置报告上下文（用于模板动态描述）
+    analyzer.report_context['analysis_basis'] = strategy.get_strategy_name()
     noise_summary, noise_df = analyzer.estimate_measurement_noise(
         raw_df,
         col_woman='孕妇代码',
