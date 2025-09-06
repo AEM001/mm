@@ -148,9 +148,10 @@ def main():
     report_csv = args.out_dir / "female_anova_report.csv"
     report_df.to_csv(report_csv, index=False)
 
-    # Build filtered dataset: keep ID, target, selected features
+    # Build filtered dataset: keep ID, target, single chromo labels, selected features
     id_cols = [c for c in ["孕妇代码", "检测抽血次数"] if c in df.columns]
-    out_cols = id_cols + [args.target] + selected
+    single_chromo_labels = [c for c in ["ab_T13", "ab_T18", "ab_T21"] if c in df.columns]
+    out_cols = id_cols + [args.target] + single_chromo_labels + selected
     out_cols = [c for c in out_cols if c in df.columns]
 
     filtered = df[out_cols].copy()
