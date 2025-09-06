@@ -1,8 +1,6 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""
-问题二数据处理：按孕妇分组，筛选首次Y染色体浓度达标的数据
-"""
+
 
 import pandas as pd
 import numpy as np
