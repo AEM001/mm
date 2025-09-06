@@ -1,17 +1,17 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-ANOVA-based feature selection for female_cleaned.csv
-- Reads cleaned data produced by q4_female_processing.py
-- Runs one-way ANOVA for each numeric feature vs binary target is_abnormal
-- Outputs an ANOVA report and a filtered dataset with selected features
+基于ANOVA的特征选择，用于female_cleaned.csv
+- 读取由q4_female_processing.py生成的清洗后数据
+- 对每个数值特征与二元目标变量is_abnormal运行单因素方差分析(ANOVA)
+- 输出ANOVA报告和包含选定特征的过滤数据集
 
-Design choices:
-- Keep raw Z-score features (13/18/21, X) even if p>threshold when --always_keep_z is True
-- By default, threshold by p-value if SciPy is available; otherwise fallback to eta-squared threshold
-- Does not overwrite original cleaned data; writes new files with distinct names
+设计选择:
+- 当--always_keep_z为True时，即使p值>阈值，也保留原始Z分数特征(13/18/21, X)
+- 默认情况下，如果SciPy可用，则通过p值进行阈值筛选；否则回退到使用eta平方阈值
+- 不覆盖原始清洗数据；使用不同名称写入新文件
 
-Usage:
+使用方法:
   python q4_anova_feature_select.py \
     --input_csv 4/female_cleaned.csv \
     --out_dir 4 \
@@ -92,8 +92,8 @@ def main():
     parser.add_argument("--input_csv", type=Path, default=Path(__file__).resolve().parent / "female_cleaned.csv")
     parser.add_argument("--out_dir", type=Path, default=Path(__file__).resolve().parent)
     parser.add_argument("--target", type=str, default="is_abnormal")
-    parser.add_argument("--p_threshold", type=float, default=0.05)
-    parser.add_argument("--eta_threshold", type=float, default=0.01)
+    parser.add_argument("--p_threshold", type=float, default=0.10)
+    parser.add_argument("--eta_threshold", type=float, default=0.008)
     parser.add_argument("--always_keep_z", action="store_true", default=True)
 
     args = parser.parse_args()

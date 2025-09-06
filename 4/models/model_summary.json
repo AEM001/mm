@@ -1,0 +1,26 @@
+{
+  "random_forest": {
+    "threshold": 0.7,
+    "precision": 0.625,
+    "recall": 0.25,
+    "f1": 0.35714285714285715,
+    "accuracy": 0.9010989010989011,
+    "roc_auc": 0.7296296296296296,
+    "pr_auc": 0.4192927203537977,
+    "positive_rate_pred": 0.04395604395604396
+  },
+  "xgboost": {
+    "skipped": true,
+    "reason": "xgboost not installed"
+  },
+  "lightgbm": {
+    "threshold": 0.7,
+    "precision": 0.4,
+    "recall": 0.3,
+    "f1": 0.34285714285714286,
+    "accuracy": 0.8736263736263736,
+    "roc_auc": 0.7234567901234568,
+    "pr_auc": 0.33076659213836074,
+    "positive_rate_pred": 0.08241758241758242
+  }
+}
