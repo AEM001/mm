@@ -206,9 +206,9 @@ class GAMMYChromosomePredictor:
             with localconverter(robjects.default_converter + pandas2ri.converter):
                 r_data = robjects.conversion.py2rpy(pd.DataFrame(data_dict))
             
-            # 构建包含所有特征的GAMM公式
+            # 构建包含所有特征的GAMM公式（降低自由度以避免过拟合）
             n_features = X.shape[1]
-            smooth_terms = [f's(x{i+1}, k=5)' for i in range(n_features)]
+            smooth_terms = [f's(x{i+1}, k=3)' for i in range(n_features)]  # 降低k值
             formula = f"y ~ {' + '.join(smooth_terms)}"
             
             # 拟合完整模型
@@ -225,7 +225,7 @@ class GAMMYChromosomePredictor:
             for i, feature_name in enumerate(self.feature_names[:n_features]):
                 try:
                     # 构建单特征模型
-                    single_formula = f"y ~ s(x{i+1}, k=5)"
+                    single_formula = f"y ~ s(x{i+1}, k=3)"
                     single_model = mgcv.gam(robjects.Formula(single_formula), data=r_data, method="REML")
                     single_summary = base.summary(single_model)
                     
@@ -372,17 +372,19 @@ class GAMMYChromosomePredictor:
             data_dict = {}
             n_features = X.shape[1]
             for i in range(n_features):
-                data_dict[f'x{i+1}'] = X.iloc[:, i] if hasattr(X, 'iloc') else X[:, i]
-            data_dict['y'] = y
+                col_data = X.iloc[:, i] if hasattr(X, 'iloc') else X[:, i]
+                data_dict[f'x{i+1}'] = list(col_data)  # 转换为列表
+            data_dict['y'] = list(y)  # 转换为列表
             
             if patient_ids is not None:
-                data_dict['patient_id'] = patient_ids
+                data_dict['patient_id'] = list(patient_ids)  # 转换为列表
             
-            # 转换为R数据框
-            r_data = robjects.DataFrame(data_dict)
+            # 转换为R数据框（使用localconverter）
+            with localconverter(robjects.default_converter + pandas2ri.converter):
+                r_data = robjects.conversion.py2rpy(pd.DataFrame(data_dict))
             
             # 构建GAMM公式（动态生成）
-            smooth_terms = [f's(x{i+1}, k=5)' for i in range(n_features)]
+            smooth_terms = [f's(x{i+1}, k=3)' for i in range(n_features)]
             if patient_ids is not None:
                 formula = f"y ~ {' + '.join(smooth_terms)} + s(patient_id, bs='re')"
             else:
@@ -810,7 +812,7 @@ def main():
     predictor = GAMMYChromosomePredictor(use_r_gamm=True)
     
     # 加载数据
-    data_path = r'c:\Users\Lu\Desktop\最终版本代码\问题三\processed_data.csv'
+    data_path = 'processed_data.csv'
     df = predictor.load_and_preprocess_data(data_path)
     
     # 提取目标变量

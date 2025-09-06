@@ -29,7 +29,7 @@ class BMISegmentationAnalyzer:
     基于GAMM预测结果的BMI分段分析器
     """
     
-    def __init__(self, output_dir='d:/edgedownload/mm-1try/'):
+    def __init__(self, output_dir='./output/'):
         """
         初始化分析器
         
@@ -114,8 +114,8 @@ class BMISegmentationAnalyzer:
         """
         print("\n=== GAMM模型训练 ===")
         
-        # 训练GAMM模型
-        self.gamm_predictor.fit_gamm_model(X, y, patient_ids=target_df['孕妇代码'])
+        # 训练GAMM模型（不使用随机效应以简化模型）
+        self.gamm_predictor.fit_gamm_model(X, y, patient_ids=None)
         
         # 生成预测
         predictions = self.gamm_predictor.predict(X)
@@ -830,7 +830,7 @@ def main():
     analyzer = BMISegmentationAnalyzer()
     
     # 数据路径
-    data_path = 'd:/edgedownload/mm-1try/processed_data.csv'
+    data_path = 'processed_data.csv'
     
     try:
         # 1. 加载和准备数据
