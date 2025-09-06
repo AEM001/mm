@@ -17,25 +17,23 @@ warnings.filterwarnings('ignore')
 plt.rcParams['font.sans-serif'] = ['SimHei', 'Microsoft YaHei']
 plt.rcParams['axes.unicode_minus'] = False
 
-# 尝试导入R接口用于GAMM
+# 尝试导入R接口用于GAMM（强制要求）
 try:
     import rpy2.robjects as robjects
     from rpy2.robjects import pandas2ri
+    from rpy2.robjects.conversion import localconverter
     from rpy2.robjects.packages import importr
-    pandas2ri.activate()
-    
-    # 导入R包
+    # 使用 pandas2ri.py2rpy 进行显式转换，避免使用已弃用的 activate()
     mgcv = importr('mgcv')
     base = importr('base')
     stats_r = importr('stats')
     R_AVAILABLE = True
     print("R接口可用，将使用mgcv包进行GAMM建模")
-except ImportError:
+except Exception as e:
     R_AVAILABLE = False
-    print("R接口不可用，将使用Python替代方案")
-    from sklearn.ensemble import RandomForestRegressor
-    from sklearn.linear_model import Ridge
-    from sklearn.preprocessing import PolynomialFeatures
+    raise RuntimeError(
+        f"R/mgcv GAMM 不可用：请安装 rpy2 并在 R 中安装 mgcv 包。原始错误: {e}"
+    )
 
 class GAMMYChromosomePredictor:
     """
@@ -190,7 +188,7 @@ class GAMMYChromosomePredictor:
         if self.use_r_gamm and R_AVAILABLE:
             return self._test_significance_r_gamm(X, y, alpha)
         else:
-            return self._test_significance_python(X, y, alpha)
+            raise RuntimeError("本项目已强制使用 R/mgcv GAMM，不支持 Python 显著性检验。")
     
     def _test_significance_r_gamm(self, X, y, alpha=0.05):
         """
@@ -204,8 +202,9 @@ class GAMMYChromosomePredictor:
                     data_dict[f'x{i+1}'] = X.iloc[:, i] if hasattr(X, 'iloc') else X[:, i]
             data_dict['y'] = y
             
-            # 转换为R数据框
-            r_data = robjects.DataFrame(data_dict)
+            # 转换为R数据框（使用localconverter启用pandas转换）
+            with localconverter(robjects.default_converter + pandas2ri.converter):
+                r_data = robjects.conversion.py2rpy(pd.DataFrame(data_dict))
             
             # 构建包含所有特征的GAMM公式
             n_features = X.shape[1]
@@ -244,53 +243,7 @@ class GAMMYChromosomePredictor:
             return significant_features
             
         except Exception as e:
-            print(f"R GAMM显著性检验失败: {e}")
-            return self._test_significance_python(X, y, alpha)
-    
-    def _test_significance_python(self, X, y, alpha=0.05):
-        """
-        使用Python方法进行显著性检验（基于相关性和随机森林重要性）
-        """
-        significant_features = []
-        significance_results = []
-        
-        for i, feature_name in enumerate(self.feature_names[:X.shape[1]]):
-            # 计算相关系数和p值
-            feature_values = X.iloc[:, i] if hasattr(X, 'iloc') else X[:, i]
-            corr, p_value = stats.pearsonr(feature_values, y)
-            
-            # 使用随机森林评估特征重要性
-            rf = RandomForestRegressor(n_estimators=50, random_state=42)
-            rf.fit(np.array(feature_values).reshape(-1, 1), y)
-            importance = rf.feature_importances_[0]
-            
-            # 计算t统计量
-            n = len(feature_values)
-            t_stat = corr * np.sqrt((n-2)/(1-corr**2)) if abs(corr) < 1 else np.inf
-            
-            # 综合判断：p值显著或重要性较高
-            is_significant = p_value < alpha or importance > 0.1
-            if is_significant:
-                significant_features.append(feature_name)
-                print(f"{feature_name}: 显著 (相关性p值: {p_value:.4f}, 重要性: {importance:.4f})")
-            else:
-                print(f"{feature_name}: 不显著 (相关性p值: {p_value:.4f}, 重要性: {importance:.4f})")
-            
-            # 保存结果
-            significance_results.append({
-                '特征名称': feature_name,
-                '相关系数': corr,
-                'p值': p_value,
-                't统计量': t_stat,
-                '随机森林重要性': importance,
-                '是否显著': '是' if is_significant else '否',
-                '显著性水平': alpha
-            })
-        
-        # 保存显著性检验结果到类属性
-        self.significance_results = pd.DataFrame(significance_results)
-        
-        return significant_features
+            raise RuntimeError(f"R GAMM显著性检验失败: {e}")
     
     def exploratory_data_analysis(self, df):
         """
@@ -408,7 +361,7 @@ class GAMMYChromosomePredictor:
         if self.use_r_gamm:
             self._fit_r_gamm(X, y, patient_ids)
         else:
-            self._fit_python_alternative(X, y)
+            raise RuntimeError("本项目已强制使用 R/mgcv GAMM，不支持 Python 替代建模。")
     
     def _fit_r_gamm(self, X, y, patient_ids=None):
         """
@@ -453,62 +406,7 @@ class GAMMYChromosomePredictor:
             self.results['n_features'] = n_features
             
         except Exception as e:
-            print(f"R GAMM拟合失败: {e}")
-            print("切换到Python替代方案")
-            self.use_r_gamm = False
-            self._fit_python_alternative(X, y)
-    
-    def _fit_python_alternative(self, X, y):
-        """
-        使用Python替代方案（随机森林 + 多项式特征）
-        """
-        print("使用Python替代方案进行建模...")
-        
-        # 创建多项式特征以模拟光滑函数
-        poly_features = PolynomialFeatures(degree=2, interaction_only=True, include_bias=False)
-        X_poly = poly_features.fit_transform(X)
-        
-        # 使用随机森林作为主模型
-        rf_model = RandomForestRegressor(
-            n_estimators=100,
-            max_depth=10,
-            min_samples_split=5,
-            min_samples_leaf=2,
-            random_state=42
-        )
-        
-        # 使用岭回归作为辅助模型
-        ridge_model = Ridge(alpha=1.0)
-        
-        # 拟合模型
-        rf_model.fit(X, y)
-        ridge_model.fit(X_poly, y)
-        
-        # 集成预测
-        self.model = {
-            'rf': rf_model,
-            'ridge': ridge_model,
-            'poly_features': poly_features
-        }
-        
-        # 计算模型性能
-        y_pred_rf = rf_model.predict(X)
-        y_pred_ridge = ridge_model.predict(X_poly)
-        y_pred_ensemble = 0.7 * y_pred_rf + 0.3 * y_pred_ridge
-        
-        r2 = r2_score(y, y_pred_ensemble)
-        rmse = np.sqrt(mean_squared_error(y, y_pred_ensemble))
-        mae = mean_absolute_error(y, y_pred_ensemble)
-        
-        print(f"Python替代模型性能:")
-        print(f"R²: {r2:.4f}")
-        print(f"RMSE: {rmse:.4f}")
-        print(f"MAE: {mae:.4f}")
-        
-        self.results['model_type'] = 'Python_Alternative'
-        self.results['r_squared'] = r2
-        self.results['rmse'] = rmse
-        self.results['mae'] = mae
+            raise RuntimeError(f"R GAMM拟合失败: {e}")
     
     def predict(self, X_new):
         """
@@ -530,7 +428,7 @@ class GAMMYChromosomePredictor:
         if self.use_r_gamm:
             return self._predict_r_gamm(X_new)
         else:
-            return self._predict_python_alternative(X_new)
+            raise RuntimeError("本项目已强制使用 R/mgcv GAMM，不支持 Python 预测。")
     
     def _predict_r_gamm(self, X_new):
         """
@@ -541,26 +439,13 @@ class GAMMYChromosomePredictor:
         for i, col in enumerate(self.feature_names):
             data_dict[f'x{i+1}'] = X_new.iloc[:, i] if hasattr(X_new, 'iloc') else X_new[:, i]
         
-        r_newdata = robjects.DataFrame(data_dict)
+        with localconverter(robjects.default_converter + pandas2ri.converter):
+            r_newdata = robjects.conversion.py2rpy(pd.DataFrame(data_dict))
         
         # 进行预测
         predictions = stats_r.predict(self.model, newdata=r_newdata)
         
         return np.array(predictions)
-    
-    def _predict_python_alternative(self, X_new):
-        """
-        使用Python替代模型进行预测
-        """
-        rf_pred = self.model['rf'].predict(X_new)
-        
-        X_new_poly = self.model['poly_features'].transform(X_new)
-        ridge_pred = self.model['ridge'].predict(X_new_poly)
-        
-        # 集成预测
-        ensemble_pred = 0.7 * rf_pred + 0.3 * ridge_pred
-        
-        return ensemble_pred
     
     def cross_validate(self, X, y, cv=5):
         """
@@ -581,30 +466,8 @@ class GAMMYChromosomePredictor:
             交叉验证结果
         """
         print(f"\n进行{cv}折交叉验证...")
-        
-        if not self.use_r_gamm:
-            # 对于Python替代方案，使用sklearn的交叉验证
-            from sklearn.model_selection import cross_val_score
-            
-            rf_scores = cross_val_score(
-                RandomForestRegressor(n_estimators=100, random_state=42),
-                X, y, cv=cv, scoring='r2'
-            )
-            
-            cv_results = {
-                'mean_r2': rf_scores.mean(),
-                'std_r2': rf_scores.std(),
-                'scores': rf_scores
-            }
-            
-            print(f"交叉验证R²: {cv_results['mean_r2']:.4f} ± {cv_results['std_r2']:.4f}")
-            
-            self.results['cv_results'] = cv_results
-            return cv_results
-        
-        else:
-            print("R GAMM模型的交叉验证需要额外实现")
-            return None
+        print("R GAMM模型的交叉验证需要额外实现")
+        return None
     
     def plot_model_diagnostics(self, X, y):
         """
@@ -678,56 +541,7 @@ class GAMMYChromosomePredictor:
             'shapiro_p': shapiro_p
         }
     
-    def generate_predictions_for_new_patients(self, patient_profiles):
-        """
-        为新患者生成预测
-        
-        Parameters:
-        -----------
-        patient_profiles : pd.DataFrame
-            新患者的特征数据
-            
-        Returns:
-        --------
-        pd.DataFrame
-            包含预测结果的数据框
-        """
-        print("\n为新患者生成预测...")
-        
-        # 进行预测（使用显著特征）
-        if self.significant_features is not None:
-            available_features = [f for f in self.significant_features if f in patient_profiles.columns]
-            if len(available_features) == 0:
-                print("警告：患者数据中没有找到显著特征，使用所有可用特征")
-                available_features = [f for f in self.feature_names if f in patient_profiles.columns]
-        else:
-            available_features = [f for f in self.feature_names if f in patient_profiles.columns]
-            
-        predictions = self.predict(patient_profiles[available_features])
-        
-        # 创建结果数据框
-        results_df = patient_profiles.copy()
-        results_df['预测达标孕周'] = predictions
-        
-        # 风险分层
-        def risk_stratification(week):
-            if week < -0.5:  # 对应约12周
-                return '低风险'
-            elif week < 0.5:  # 对应约20周
-                return '中风险'
-            else:
-                return '高风险'
-        
-        results_df['风险等级'] = results_df['预测达标孕周'].apply(risk_stratification)
-        
-        # 计算置信区间（简化版本）
-        prediction_std = self.results.get('rmse', 0.5)  # 使用RMSE作为标准误差的估计
-        results_df['预测下界'] = predictions - 1.96 * prediction_std
-        results_df['预测上界'] = predictions + 1.96 * prediction_std
-        
-        return results_df
-    
-    def plot_partial_effects(self, X, y, output_dir='./'):
+    def plot_partial_effects(self, X, y):
         """
         生成每个自变量的偏效应图像
         
@@ -737,8 +551,6 @@ class GAMMYChromosomePredictor:
             特征矩阵
         y : pd.Series
             目标变量
-        output_dir : str
-            输出目录路径
         """
         print("\n正在生成偏效应图像...")
         
@@ -780,11 +592,10 @@ class GAMMYChromosomePredictor:
                     # 使用R GAMM模型进行偏效应预测
                     try:
                         partial_effects = self._compute_partial_effects_r(feature_idx, feature_range, X)
-                    except:
-                        partial_effects = self._compute_partial_effects_python(feature_idx, feature_range, X, y)
+                    except Exception as e:
+                        raise RuntimeError(f"R 偏效应计算失败: {e}")
                 else:
-                    # 使用Python模型进行偏效应预测
-                    partial_effects = self._compute_partial_effects_python(feature_idx, feature_range, X, y)
+                    raise RuntimeError("本项目已强制使用 R/mgcv GAMM，不支持 Python 偏效应计算。")
                 
                 # 绘制偏效应曲线
                 ax.plot(feature_range, partial_effects, 'b-', linewidth=2, label='偏效应')
@@ -836,7 +647,7 @@ class GAMMYChromosomePredictor:
         plt.tight_layout()
         
         # 保存图像
-        output_path = f"{output_dir}gamm_partial_effects.png"
+        output_path = f"./gamm_partial_effects.png"
         plt.savefig(output_path, dpi=300, bbox_inches='tight')
         print(f"偏效应图像已保存到: {output_path}")
         plt.show()
@@ -859,8 +670,9 @@ class GAMMYChromosomePredictor:
                     mean_val = X.iloc[:, i].mean() if hasattr(X, 'iloc') else X[:, i].mean()
                     pred_data[f'x{i+1}'] = [mean_val] * n_points
             
-            # 转换为R数据框
-            r_pred_data = robjects.DataFrame(pred_data)
+            # 转换为R数据框（使用localconverter启用pandas转换）
+            with localconverter(robjects.default_converter + pandas2ri.converter):
+                r_pred_data = robjects.conversion.py2rpy(pd.DataFrame(pred_data))
             
             # 进行预测
             predictions = mgcv.predict_gam(self.model, r_pred_data)
@@ -868,62 +680,55 @@ class GAMMYChromosomePredictor:
             return np.array(predictions)
             
         except Exception as e:
-            print(f"R偏效应计算失败: {e}")
-            return self._compute_partial_effects_python(feature_idx, feature_range, X, None)
+            raise RuntimeError(f"R偏效应计算失败: {e}")
     
-    def _compute_partial_effects_python(self, feature_idx, feature_range, X, y):
+    def generate_predictions_for_new_patients(self, patient_profiles):
         """
-        使用Python模型计算偏效应
+        为新患者生成预测
         """
-        if self.model is None:
-            # 如果没有训练好的模型，使用简单的局部回归
-            feature_values = X.iloc[:, feature_idx] if hasattr(X, 'iloc') else X[:, feature_idx]
-            
-            # 使用局部加权回归(LOWESS)进行平滑
-            try:
-                from statsmodels.nonparametric.smoothers_lowess import lowess
-                smoothed = lowess(y, feature_values, frac=0.3)
-                
-                # 插值到新的特征范围
-                from scipy.interpolate import interp1d
-                interp_func = interp1d(smoothed[:, 0], smoothed[:, 1], 
-                                     kind='linear', fill_value='extrapolate')
-                return interp_func(feature_range)
-            except:
-                # 如果LOWESS失败，使用简单的线性插值
-                sorted_indices = np.argsort(feature_values)
-                sorted_x = feature_values.iloc[sorted_indices] if hasattr(feature_values, 'iloc') else feature_values[sorted_indices]
-                sorted_y = y.iloc[sorted_indices] if hasattr(y, 'iloc') else y[sorted_indices]
-                
-                from scipy.interpolate import interp1d
-                interp_func = interp1d(sorted_x, sorted_y, kind='linear', fill_value='extrapolate')
-                return interp_func(feature_range)
+        print("\n为新患者生成预测...")
         
-        elif isinstance(self.model, dict):  # Python替代模型
-            # 创建预测数据
-            n_points = len(feature_range)
-            pred_X = np.zeros((n_points, X.shape[1]))
-            
-            # 设置其他特征为均值
-            for i in range(X.shape[1]):
-                if i == feature_idx:
-                    pred_X[:, i] = feature_range
-                else:
-                    pred_X[:, i] = X.iloc[:, i].mean() if hasattr(X, 'iloc') else X[:, i].mean()
-            
-            # 使用随机森林模型预测
-            rf_pred = self.model['rf'].predict(pred_X)
-            
-            # 使用岭回归模型预测
-            pred_X_poly = self.model['poly_features'].transform(pred_X)
-            ridge_pred = self.model['ridge'].predict(pred_X_poly)
-            
-            # 集成预测
-            return 0.7 * rf_pred + 0.3 * ridge_pred
-        
+        # 选择可用的特征列（优先显著特征）
+        if self.significant_features is not None:
+            available_features = [f for f in self.significant_features if f in patient_profiles.columns]
+            if len(available_features) == 0:
+                print("警告：患者数据中没有找到显著特征，使用所有可用特征")
+                available_features = [f for f in self.feature_names if f in patient_profiles.columns]
         else:
-            # 其他情况，返回零效应
-            return np.zeros_like(feature_range)
+            available_features = [f for f in self.feature_names if f in patient_profiles.columns]
+        
+        # 构造与训练时一致的完整特征矩阵（按 self.feature_names 顺序缺失填0）
+        df_full = pd.DataFrame()
+        for fname in self.feature_names:
+            if fname in patient_profiles.columns:
+                df_full[fname] = patient_profiles[fname]
+            else:
+                df_full[fname] = 0.0  # 标准化特征的均值近似为0
+        
+        # 使用已训练的 R GAMM 模型进行预测
+        predictions = self.predict(df_full)
+        
+        # 组装结果
+        results_df = patient_profiles.copy()
+        results_df['预测达标孕周'] = predictions
+        
+        # 风险分层（基于标准化孕周）
+        def risk_stratification(week):
+            if week < -0.5:  # 约早于12周
+                return '低风险'
+            elif week < 0.5:  # 约20周以内
+                return '中风险'
+            else:
+                return '高风险'
+        
+        results_df['风险等级'] = results_df['预测达标孕周'].apply(risk_stratification)
+        
+        # 简易置信区间（使用训练残差RMSE作为近似标准误）
+        prediction_std = self.results.get('rmse', 0.5)
+        results_df['预测下界'] = predictions - 1.96 * prediction_std
+        results_df['预测上界'] = predictions + 1.96 * prediction_std
+        
+        return results_df
     
     def save_results(self, output_path):
         """
