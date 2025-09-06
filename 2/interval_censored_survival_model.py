@@ -29,6 +29,13 @@ sys.path.append('/Users/Mac/Downloads/mm')
 from set_chinese_font import set_chinese_font
 set_chinese_font()
 
+# 导入检测误差分析模块
+from detection_error_analysis import (
+    DetectionErrorAnalyzer, 
+    create_error_visualizations, 
+    generate_error_report
+)
+
 class IntervalCensoredSurvivalModel:
     """
     区间删失生存模型类
@@ -36,13 +43,24 @@ class IntervalCensoredSurvivalModel:
     
     def __init__(self):
         self.data = None
+        self.raw_df = None
         self.model_params = None
         self.bmi_groups = None
         self.optimal_timings = None
         self.output_dir = '.'
+        self.detection_error_dir = None
+        self.error_metrics = None
+        self.error_results = None
+        # 列名记录（便于误差分析复用）
+        self.col_bmi = None
+        self.col_age = None
+        self.col_week = None
         # 时间标准化参数（假设：均值=15周，标准差=3周）
         self.time_mean = 16.846
         self.time_std = 4.076
+        # 阈值设定（题目背景：4%阈值，使用logit变换）
+        self.threshold_percentage = 0.04
+        self.threshold_logit = np.log(self.threshold_percentage / (1 - self.threshold_percentage))
     
     def standardized_to_original_time(self, standardized_time):
         """将标准化时间转换为原始孕周"""
@@ -101,6 +119,9 @@ class IntervalCensoredSurvivalModel:
             if 'BMI_标准化' in df_clean.columns:
                 print(f"  BMI(标准化)范围: {df_clean['BMI_标准化'].min():.3f} - {df_clean['BMI_标准化'].max():.3f}")
         
+        # 保存逐次测量级别数据供检测误差分析复用
+        self.raw_df = df_clean.copy()
+
         df = df_clean
         
         # 构建区间删失数据
@@ -113,6 +134,10 @@ class IntervalCensoredSurvivalModel:
         week_col = '孕周_标准化' if '孕周_标准化' in df.columns else None
         
         print(f"使用的列名: BMI={bmi_col}, 年龄={age_col}, 孕周={week_col}")
+        # 记录列名
+        self.col_bmi = bmi_col
+        self.col_age = age_col
+        self.col_week = week_col
         
         for woman_code, woman_data in df.groupby('孕妇代码'):
             # 如果有孕周信息，按孕周排序
@@ -138,8 +163,7 @@ class IntervalCensoredSurvivalModel:
             
             # 判断删失类型 - 使用4%的Y染色体浓度作为达标标准（题目要求）
             # 4%的Logit变换: logit(0.04) = log(0.04/(1-0.04)) = log(0.04/0.96)
-            threshold_percentage = 0.04
-            threshold = np.log(threshold_percentage / (1 - threshold_percentage))  # Logit变换后的阈值
+            threshold = self.threshold_logit  # Logit变换后的阈值
             qualified_indices = np.where(y_concentrations >= threshold)[0]
             
             if len(qualified_indices) == 0:
@@ -786,6 +810,76 @@ class IntervalCensoredSurvivalModel:
         print(report)
         
         return report
+    
+    def perform_detection_error_analysis(self):
+        """
+        执行检测误差分析
+        
+        Returns:
+            dict: 误差分析结果汇总
+        """
+        print(f"\n=== 步骤6: 检测误差分析 ===")
+        
+        if self.raw_df is None:
+            print("警告: 没有逐次测量数据，跳过误差分析")
+            return None
+            
+        # 创建误差分析器
+        analyzer = DetectionErrorAnalyzer(
+            output_dir=self.output_dir,
+            threshold_logit=self.threshold_logit
+        )
+        
+        try:
+            # 1. 测量噪声估计
+            noise_summary, noise_df = analyzer.estimate_measurement_noise(
+                df=self.raw_df,
+                col_woman='孕妇代码',
+                col_y='Y染色体浓度',
+                col_week=self.col_week
+            )
+            
+            # 2. 检测误差分析
+            error_summary, error_df = analyzer.analyze_detection_errors(
+                df=self.raw_df,
+                col_woman='孕妇代码',
+                col_y='Y染色体浓度'
+            )
+            
+            # 3. 蒙特卡洛模拟
+            # 提取各BMI组的最佳时点作为"真实"达标时间
+            true_times = self.optimal_timings['最佳时点'].values if self.optimal_timings is not None else [15.0] * len(self.bmi_groups)
+            
+            sim_summary, sim_df = analyzer.monte_carlo_simulation(
+                true_times=true_times,
+                bmi_groups=self.bmi_groups,
+                n_simulations=1000
+            )
+            
+            # 4. 创建可视化
+            create_error_visualizations(analyzer, noise_df, error_df, sim_df)
+            
+            # 5. 生成报告
+            error_report = generate_error_report(analyzer)
+            
+            # 汇总所有结果
+            error_analysis_results = {
+                'noise_analysis': noise_summary,
+                'error_analysis': error_summary,
+                'simulation_results': sim_summary,
+                'analyzer': analyzer
+            }
+            
+            print(f"\n检测误差分析完成！")
+            print(f"结果已保存到目录: {analyzer.error_dir}")
+            
+            return error_analysis_results
+            
+        except Exception as e:
+            print(f"检测误差分析过程中出现错误: {str(e)}")
+            import traceback
+            traceback.print_exc()
+            return None
 
 
 def main():
@@ -821,8 +915,13 @@ def main():
         # 步骤6: 生成报告
         model.generate_report()
         
+        # 步骤7: 检测误差分析
+        error_results = model.perform_detection_error_analysis()
+        
         print("\n=== 分析完成 ===")
         print(f"所有结果文件已保存到目录: {model.output_dir}")
+        if error_results:
+            print(f"检测误差分析结果已保存到子目录: {error_results['analyzer'].error_dir}")
         
     except Exception as e:
         print(f"分析过程中出现错误: {str(e)}")
