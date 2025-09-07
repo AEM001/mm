@@ -15,11 +15,8 @@ PROJECT_ROOT = os.path.dirname(SCRIPT_DIR)
 if PROJECT_ROOT not in sys.path:
     sys.path.insert(0, PROJECT_ROOT)
 
-try:
-    from set_chinese_font import set_chinese_font
-    set_chinese_font()
-except Exception:
-    pass
+from set_chinese_font import set_chinese_font
+set_chinese_font()
 
 from kmeans_bmi_segmentation import BMISegmentationAnalyzer
 
@@ -34,7 +31,6 @@ class Q3DetectionErrorAnalyzer:
         self.threshold_logit = threshold_logit
         self.threshold_percentage = 0.04
 
-        self.report_context = {}
         self.cluster_noise_metrics = {}
         self.group_comparison = {}
         self.gamm_error_analysis = {}
@@ -107,24 +103,18 @@ class Q3DetectionErrorAnalyzer:
         n_measurements = len(y_values)
         signal_std = np.std(y_values)
         if n_measurements >= 3:
-            try:
-                from scipy.interpolate import UnivariateSpline
-                spline = UnivariateSpline(weeks, y_values, s=0.1)
-                y_gamm_fitted = spline(weeks)
-                residuals_gamm = y_values - y_gamm_fitted
-                noise_gamm = np.std(residuals_gamm)
-            except Exception:
-                noise_gamm = np.nan
+            from scipy.interpolate import UnivariateSpline
+            spline = UnivariateSpline(weeks, y_values, s=0.1)
+            y_gamm_fitted = spline(weeks)
+            residuals_gamm = y_values - y_gamm_fitted
+            noise_gamm = np.std(residuals_gamm)
         else:
             noise_gamm = np.nan
         if n_measurements >= 3:
-            try:
-                weights = 1.0 / (1.0 + 0.1 * np.abs(np.diff(weeks, prepend=weeks[0])))
-                y_weighted = np.average(y_values, weights=weights)
-                residuals_time = y_values - y_weighted
-                noise_time = np.std(residuals_time)
-            except Exception:
-                noise_time = np.nan
+            weights = 1.0 / (1.0 + 0.1 * np.abs(np.diff(weeks, prepend=weeks[0])))
+            y_weighted = np.average(y_values, weights=weights)
+            residuals_time = y_values - y_weighted
+            noise_time = np.std(residuals_time)
         else:
             noise_time = np.nan
         individual_mean = np.mean(y_values)
@@ -160,7 +150,6 @@ class Q3DetectionErrorAnalyzer:
                 '显著性': 'significant' if p_val_gamm < 0.05 else 'not_significant'
             }
         
-        # 时间相关噪声的组间比较
         if len(noise_time_groups) > 1 and all(len(g) > 0 for g in noise_time_groups):
             f_stat_time, p_val_time = f_oneway(*noise_time_groups)
             kruskal_stat_time, kruskal_p_time = kruskal(*noise_time_groups)
@@ -256,7 +245,6 @@ class Q3DetectionErrorAnalyzer:
     def _create_comparison_dataframe(self, comparison_results, pairwise_comparisons):
         rows = []
         
-        # 添加总体统计检验结果
         for noise_type, result in comparison_results.items():
             rows.append({
                 '比较类型': '总体检验',
@@ -267,7 +255,6 @@ class Q3DetectionErrorAnalyzer:
                 '效应大小': None
             })
         
-        # 添加配对比较结果
         for pair, comparisons in pairwise_comparisons.items():
             for noise_type, cohens_d in comparisons.items():
                 rows.append({
@@ -358,7 +345,6 @@ class Q3DetectionErrorAnalyzer:
             
             results.append(group_result)
             
-            # 保存详细的模拟数据（用于后续分析）
             for i, (dt, gc, nc) in enumerate(zip(detected_times, gamm_errors, noise_contributions)):
                 sim_details.append({
                     '聚类组': cluster_key,
@@ -422,82 +408,60 @@ class Q3DetectionErrorAnalyzer:
             level_consistency = []
             
             for bootstrap_i in range(n_bootstrap):
-                try:
-                    # 1. 向原始数据添加噪声
-                    perturbed_df = raw_df.copy()
-                    noise = np.random.normal(0, noise_level, len(perturbed_df))
-                    perturbed_df['Y染色体浓度'] = perturbed_df['Y染色体浓度'] + noise
-                    
-                    # 2. 从扰动数据中重新提取特征和标的（模拟GAMM处理）
-                    # 获取每个孕妇的首次达标孕周（简化版GAMM目标提取）
-                    target_data = []
-                    for woman_code, woman_data in perturbed_df.groupby('孕妇代码'):
-                        # 找到首次达到阈值的时间点
-                        qualified = woman_data[woman_data['Y染色体浓度'] >= np.log(0.04/(1-0.04))]
-                        if len(qualified) > 0:
-                            first_qualified_week = qualified['孕周_标准化'].min()
-                        else:
-                            first_qualified_week = woman_data['孕周_标准化'].max() + 1
-                        
-                        # 获取BMI信息
-                        bmi_info = cluster_df[cluster_df['孕妇代码'] == woman_code]
-                        if len(bmi_info) > 0:
-                            target_data.append({
-                                '孕妇代码': woman_code,
-                                'BMI_标准化': bmi_info['BMI_标准化'].iloc[0],
-                                '预测达标孕周': first_qualified_week,
-                                '年龄_标准化': bmi_info.get('年龄_标准化', [0]).iloc[0]
-                            })
-                    
-                    if len(target_data) < 10:  # 数据太少，跳过
-                        continue
-                        
-                    perturbed_target_df = pd.DataFrame(target_data)
-                    
-                    # 3. 使用相同的聚类方法重新聚类
-                    perturbed_cluster_df = bmi_analyzer.perform_clustering(
-                        perturbed_target_df, 
-                        optimal_k=n_clusters
-                    )
-                    
-                    # 4. 计算聚类一致性指标
-                    # 匹配原始聚类中的样本
-                    common_women = set(cluster_df['孕妇代码']) & set(perturbed_cluster_df['孕妇代码'])
-                    if len(common_women) < 10:
-                        continue
-                    
-                    # 提取匹配样本的聚类标签
-                    original_matched = cluster_df[cluster_df['孕妇代码'].isin(common_women)].sort_values('孕妇代码')
-                    perturbed_matched = perturbed_cluster_df[perturbed_cluster_df['孕妇代码'].isin(common_women)].sort_values('孕妇代码')
-                    
-                    orig_labels = original_matched['聚类标签'].values
-                    pert_labels = perturbed_matched['聚类标签'].values
-                    
-                    # 计算稳定性指标
-                    ari = adjusted_rand_score(orig_labels, pert_labels)
-                    nmi = normalized_mutual_info_score(orig_labels, pert_labels)
-                    
-                    # 聚类分配一致性（相同聚类的比例）
-                    consistency = np.mean(orig_labels == pert_labels)
-                    
-                    level_ari_scores.append(ari)
-                    level_nmi_scores.append(nmi)
-                    level_consistency.append(consistency)
-                    
-                except Exception as e:
-                    
+                perturbed_df = raw_df.copy()
+                noise = np.random.normal(0, noise_level, len(perturbed_df))
+                perturbed_df['Y染色体浓度'] = perturbed_df['Y染色体浓度'] + noise
+
+                target_data = []
+                for woman_code, woman_data in perturbed_df.groupby('孕妇代码'):
+                    qualified = woman_data[woman_data['Y染色体浓度'] >= np.log(0.04/(1-0.04))]
+                    if len(qualified) > 0:
+                        first_qualified_week = qualified['孕周_标准化'].min()
+                    else:
+                        first_qualified_week = woman_data['孕周_标准化'].max() + 1
+                    bmi_info = cluster_df[cluster_df['孕妇代码'] == woman_code]
+                    if len(bmi_info) > 0:
+                        target_data.append({
+                            '孕妇代码': woman_code,
+                            'BMI_标准化': bmi_info['BMI_标准化'].iloc[0],
+                            '预测达标孕周': first_qualified_week,
+                            '年龄_标准化': bmi_info.get('年龄_标准化', [0]).iloc[0]
+                        })
+
+                if len(target_data) < 10:
                     continue
-            
-            # 记录当前噪声水平的结果
-            if level_ari_scores:  # 确保有有效结果
+
+                perturbed_target_df = pd.DataFrame(target_data)
+
+                perturbed_cluster_df = bmi_analyzer.perform_clustering(
+                    perturbed_target_df,
+                    optimal_k=n_clusters
+                )
+
+                common_women = set(cluster_df['孕妇代码']) & set(perturbed_cluster_df['孕妇代码'])
+                if len(common_women) < 10:
+                    continue
+
+                original_matched = cluster_df[cluster_df['孕妇代码'].isin(common_women)].sort_values('孕妇代码')
+                perturbed_matched = perturbed_cluster_df[perturbed_cluster_df['孕妇代码'].isin(common_women)].sort_values('孕妇代码')
+
+                orig_labels = original_matched['聚类标签'].values
+                pert_labels = perturbed_matched['聚类标签'].values
+
+                ari = adjusted_rand_score(orig_labels, pert_labels)
+                nmi = normalized_mutual_info_score(orig_labels, pert_labels)
+
+                consistency = np.mean(orig_labels == pert_labels)
+
+                level_ari_scores.append(ari)
+                level_nmi_scores.append(nmi)
+                level_consistency.append(consistency)
+
+            if level_ari_scores:
                 stability_metrics['ARI_scores'].append(np.mean(level_ari_scores))
                 stability_metrics['NMI_scores'].append(np.mean(level_nmi_scores))
                 stability_metrics['cluster_consistency'].append(np.mean(level_consistency))
                 stability_metrics['noise_levels'].append(noise_level)
-                
-                
-        
-        # 汇总稳定性分析结果
         stability_analysis = {
             '稳定性指标': {
                 '平均ARI': np.mean(stability_metrics['ARI_scores']) if stability_metrics['ARI_scores'] else 0,
@@ -528,18 +492,13 @@ class Q3DetectionErrorAnalyzer:
         
         self.stability_analysis = stability_analysis
         
-        
-        
         return stability_analysis
     
     def _calculate_trend(self, x_values, y_values):
         if len(x_values) < 2 or len(y_values) < 2:
             return 0
-        try:
-            slope = np.polyfit(x_values, y_values, 1)[0]
-            return slope
-        except:
-            return 0
+        slope = np.polyfit(x_values, y_values, 1)[0]
+        return slope
     
     def _find_stability_threshold(self, metrics):
         threshold = 0.7
@@ -566,25 +525,16 @@ class Q3DetectionErrorAnalyzer:
 
 
 def create_q3_specialized_visualizations(analyzer, cluster_noise_df, sim_detail_df):
-    
-    
-    # 设置中文字体
-    try:
-        from set_chinese_font import set_chinese_font
-        set_chinese_font()
-    except Exception:
-        pass
+    from set_chinese_font import set_chinese_font
+    set_chinese_font()
 
-    # 创建3x3的子图布局，增大尺寸
     fig, axes = plt.subplots(3, 3, figsize=(24, 20))
-    
-    # 1. 聚类特异性噪声分布对比 - 简化为按噪声类型分组
+
     ax1 = axes[0, 0]
     groups = sorted(cluster_noise_df['聚类组'].unique())
     noise_types = ['噪声_GAMM残差', '噪声_时间相关', '噪声_聚类内变异']
     noise_type_labels = ['GAMM残差', '时间相关', '聚类内变异']
-    
-    # 按噪声类型分组显示
+
     positions = []
     noise_data = []
     box_labels = []
@@ -615,8 +565,7 @@ def create_q3_specialized_visualizations(analyzer, cluster_noise_df, sim_detail_
     ax1.set_xticklabels(box_labels)
     ax1.tick_params(axis='x', labelsize=10)
     ax1.grid(True, alpha=0.3)
-    
-    # 2. 组间噪声差异显著性热图
+
     ax2 = axes[0, 1]
     if analyzer.group_comparison and '统计检验结果' in analyzer.group_comparison:
         comparison_results = analyzer.group_comparison['统计检验结果']
@@ -628,8 +577,7 @@ def create_q3_specialized_visualizations(analyzer, cluster_noise_df, sim_detail_
                 p_values.append(comparison_results[nt]['ANOVA_p值'])
             else:
                 p_values.append(1.0)
-        
-        # 创建显著性矩阵
+
         significance_matrix = np.array(p_values).reshape(1, -1)
         im = ax2.imshow(significance_matrix, cmap='RdYlGn_r', aspect='auto', vmin=0, vmax=0.1)
         ax2.set_xticks(range(len(noise_types_short)))
@@ -638,13 +586,11 @@ def create_q3_specialized_visualizations(analyzer, cluster_noise_df, sim_detail_
         ax2.set_yticklabels(['p值'])
         ax2.set_title('组间差异显著性')
         ax2.tick_params(axis='x', labelsize=9)
-        
-        # 添加p值标注
+
         for i, p_val in enumerate(p_values):
             ax2.text(i, 0, f'{p_val:.3f}', ha='center', va='center', 
                     color='white' if p_val < 0.05 else 'black', fontweight='bold')
-    
-    # 3. GAMM误差传播的聚类分析
+
     ax3 = axes[0, 2]
     if len(sim_detail_df) > 0:
         for group in sim_detail_df['聚类组'].unique():
@@ -656,8 +602,7 @@ def create_q3_specialized_visualizations(analyzer, cluster_noise_df, sim_detail_
         ax3.set_title('噪声水平 vs 时间偏差')
         ax3.legend(fontsize=8)
         ax3.grid(True, alpha=0.3)
-    
-    # 4. 各聚类组的RMSE对比
+
     ax4 = axes[1, 0]
     if analyzer.simulation_results and '各组结果' in analyzer.simulation_results:
         groups_results = analyzer.simulation_results['各组结果']
@@ -677,8 +622,7 @@ def create_q3_specialized_visualizations(analyzer, cluster_noise_df, sim_detail_
         ax4.tick_params(axis='x', labelsize=8)
         ax4.legend()
         ax4.grid(True, alpha=0.3)
-    
-    # 5. 时间偏差分布
+
     ax5 = axes[1, 1]
     if analyzer.simulation_results and '各组结果' in analyzer.simulation_results:
         groups_results = analyzer.simulation_results['各组结果']
@@ -692,16 +636,14 @@ def create_q3_specialized_visualizations(analyzer, cluster_noise_df, sim_detail_
         ax5.set_title('各聚类组达标时间偏差')
         ax5.tick_params(axis='x', labelsize=8, rotation=45)
         ax5.grid(True, alpha=0.3)
-        
-        # 添加数值标注
+
         for bar, bias in zip(bars, biases):
             height = bar.get_height()
             ax5.text(bar.get_x() + bar.get_width()/2, 
                     height + 0.1 if height > 0 else height - 0.1,
                     f'{bias:+.1f}', ha='center', 
                     va='bottom' if height > 0 else 'top')
-    
-    # 6. 噪声贡献分析饼图
+
     ax6 = axes[1, 2]
     if analyzer.simulation_results and '噪声贡献分析' in analyzer.simulation_results:
         contributions = analyzer.simulation_results['噪声贡献分析']
@@ -711,8 +653,7 @@ def create_q3_specialized_visualizations(analyzer, cluster_noise_df, sim_detail_
         
         wedges, texts, autotexts = ax6.pie(sizes, labels=labels, colors=colors, autopct='%1.1f%%', startangle=90)
         ax6.set_title('噪声贡献组成')
-    
-    # 7. 聚类稳定性分析
+
     ax7 = axes[2, 0]
     if analyzer.stability_analysis and '详细结果' in analyzer.stability_analysis:
         stability_metrics = analyzer.stability_analysis['详细结果']
@@ -729,8 +670,7 @@ def create_q3_specialized_visualizations(analyzer, cluster_noise_df, sim_detail_
             ax7.legend()
             ax7.grid(True, alpha=0.3)
             ax7.axhline(y=0.7, color='red', linestyle='--', alpha=0.5, label='稳定性阈值')
-    
-    # 8. 检测性能对比
+
     ax8 = axes[2, 1]
     if analyzer.simulation_results and '各组结果' in analyzer.simulation_results:
         groups_results = analyzer.simulation_results['各组结果']
@@ -752,8 +692,7 @@ def create_q3_specialized_visualizations(analyzer, cluster_noise_df, sim_detail_
         ax8.tick_params(axis='x', labelsize=7, rotation=30)
         ax8.legend()
         ax8.grid(True, alpha=0.3)
-    
-    # 9. 置信区间与预测精度
+
     ax9 = axes[2, 2]
     if analyzer.simulation_results and '各组结果' in analyzer.simulation_results:
         groups_results = analyzer.simulation_results['各组结果']
@@ -764,14 +703,12 @@ def create_q3_specialized_visualizations(analyzer, cluster_noise_df, sim_detail_
             pred_mean = result['预测均值(周)']
             ci_lower = result['CI_2.5%(周)']
             ci_upper = result['CI_97.5%(周)']
-            
-            # 绘制置信区间
+
             ax9.errorbar(i, pred_mean, 
                         yerr=[[pred_mean - ci_lower], [ci_upper - pred_mean]], 
                         fmt='o', capsize=5, label='预测' if i == 0 else "", 
                         color='blue', alpha=0.7)
-            
-            # 绘制真实值
+
             ax9.scatter(i, true_time, color='red', s=50, marker='x', 
                        label='真实' if i == 0 else "")
         
@@ -791,234 +728,6 @@ def create_q3_specialized_visualizations(analyzer, cluster_noise_df, sim_detail_
     
 
 
-def generate_q3_specialized_report(analyzer):
-    
-
-    analysis_basis = analyzer.report_context.get('analysis_basis', 'GAMM+KMeans聚类分组')
-    report_title = analyzer.report_context.get('report_title', '问题三（GAMM+KMeans）聚类驱动的检测误差分析报告')
-    
-    report = f"""# {report_title}
-
-## 1. 分析概述
-
-本报告基于**GAMM（广义加性混合模型）+KMeans聚类**的框架，分析NIPT检测过程中聚类特异性的测量误差及其对达标时间预测的影响。与传统的单一误差分析不同，本分析充分利用了BMI聚类分组的特征，实现了**聚类驱动的误差建模**。
-
-### 1.1 问题三特色分析框架
-
-- **聚类特异性噪声估计**：针对不同BMI聚类组分别分析噪声特征
-- **组间差异统计检验**：评估不同聚类组噪声特征的显著性差异
-- **GAMM驱动的误差传播**：基于GAMM预测结果进行误差传播分析
-- **聚类稳定性评估**：分析噪声对聚类结果稳定性的影响
-
-"""
-
-    # 分组设定部分
-    group_summary = analyzer.report_context.get('group_summary')
-    if group_summary:
-        report += f"""### 1.2 聚类分组设定
-
-{group_summary}
-
-"""
-
-    # 聚类特异性噪声分析
-    report += """## 2. 聚类特异性噪声分析
-
-### 2.1 各聚类组噪声特征
-"""
-
-    if analyzer.cluster_noise_metrics:
-        for group_name, group_metrics in analyzer.cluster_noise_metrics.items():
-            report += f"""
-#### {group_name}
-- **样本数量**: {group_metrics['样本数']}个孕妇
-- **BMI范围**: {group_metrics['BMI范围']}
-- **平均测量次数**: {group_metrics['平均测量次数']:.1f}次
-
-**噪声特征**：
-- GAMM残差噪声: 均值={group_metrics['噪声特征']['GAMM残差噪声']['均值']:.6f}, 中位数={group_metrics['噪声特征']['GAMM残差噪声']['中位数']:.6f}
-- 时间相关噪声: 均值={group_metrics['噪声特征']['时间相关噪声']['均值']:.6f}, 中位数={group_metrics['噪声特征']['时间相关噪声']['中位数']:.6f}
-- 聚类内变异: 均值={group_metrics['噪声特征']['聚类内变异']['均值']:.6f}, 中位数={group_metrics['噪声特征']['聚类内变异']['中位数']:.6f}
-
-**信噪比**：
-- SNR (GAMM): {group_metrics['信噪比']['SNR_GAMM']:.2f}
-- SNR (时间): {group_metrics['信噪比']['SNR_时间']:.2f}
-- SNR (聚类): {group_metrics['信噪比']['SNR_聚类']:.2f}
-"""
-
-    # 组间差异分析
-    report += """
-## 3. 组间噪声差异分析
-
-### 3.1 统计检验结果
-"""
-
-    if analyzer.group_comparison and '统计检验结果' in analyzer.group_comparison:
-        comparison_results = analyzer.group_comparison['统计检验结果']
-        for noise_type, result in comparison_results.items():
-            significance = "**显著**" if result['显著性'] == 'significant' else "不显著"
-            report += f"""
-#### {noise_type}
-- ANOVA F值: {result['ANOVA_F值']:.4f}
-- ANOVA p值: {result['ANOVA_p值']:.6f}
-- Kruskal-Wallis H值: {result['Kruskal_H值']:.4f}
-- Kruskal p值: {result['Kruskal_p值']:.6f}
-- **显著性**: {significance}
-"""
-
-    # 配对比较
-    if analyzer.group_comparison and '配对比较' in analyzer.group_comparison:
-        pairwise = analyzer.group_comparison['配对比较']
-        if pairwise:
-            report += """
-### 3.2 配对比较（效应大小）
-"""
-            for pair, comparisons in pairwise.items():
-                report += f"\n#### {pair}\n"
-                for noise_metric, cohens_d in comparisons.items():
-                    effect_size = _interpret_cohens_d(cohens_d)
-                    report += f"- {noise_metric}: Cohen's d = {cohens_d:.4f} ({effect_size})\n"
-
-    # GAMM驱动的误差传播分析
-    report += """
-## 4. GAMM驱动的误差传播分析
-
-### 4.1 基于聚类的误差建模
-"""
-
-    if analyzer.gamm_error_analysis and '聚类间差异' in analyzer.gamm_error_analysis:
-        cluster_diff = analyzer.gamm_error_analysis['聚类间差异']
-        noise_contrib = analyzer.gamm_error_analysis['噪声贡献分析']
-        
-        report += f"""
-**聚类间差异**：
-- 时间偏差范围: {cluster_diff['时间偏差范围']}
-- 平均RMSE: {cluster_diff['平均RMSE']:.2f}周
-- 最大RMSE: {cluster_diff['最大RMSE']:.2f}周
-- 偏差标准差: {cluster_diff['偏差标准差']:.2f}周
-
-**噪声贡献分析**：
-- GAMM误差占比: {noise_contrib['GAMM误差占比']:.6f}
-- 时间噪声占比: {noise_contrib['时间噪声占比']:.6f}
-- 聚类噪声占比: {noise_contrib['聚类噪声占比']:.6f}
-"""
-
-    # 各聚类组详细结果
-    if analyzer.gamm_error_analysis and '各组结果' in analyzer.gamm_error_analysis:
-        groups_results = analyzer.gamm_error_analysis['各组结果']
-        report += """
-### 4.2 各聚类组误差传播结果
-"""
-        
-        for group_result in groups_results:
-            report += f"""
-#### {group_result['聚类组']} ({group_result['BMI范围(标准化)']})
-- **样本数**: {group_result['样本数']}个孕妇
-- **真实达标时间**: {group_result['真实达标时间(周)']:.1f}周
-- **预测均值**: {group_result['预测均值(周)']:.1f}周
-- **时间偏差**: {group_result['时间偏差(周)']:+.1f}周
-- **RMSE**: {group_result['RMSE(周)']:.1f}周
-- **MAE**: {group_result['MAE(周)']:.1f}周
-- **95%置信区间**: [{group_result['CI_2.5%(周)']:.1f}, {group_result['CI_97.5%(周)']:.1f}]周
-
-**检测性能**：
-- 10周内检出率: {group_result['检测性能']['10周内检出率']*100:.1f}%
-- 15周内检出率: {group_result['检测性能']['15周内检出率']*100:.1f}%
-- 20周内检出率: {group_result['检测性能']['20周内检出率']*100:.1f}%
-- 有效检测率: {group_result['检测性能']['有效检测率']*100:.1f}%
-"""
-
-    # 聚类稳定性分析
-    report += """
-## 5. 聚类稳定性分析
-
-### 5.1 噪声对聚类稳定性的影响
-"""
-
-    if analyzer.stability_analysis:
-        stability = analyzer.stability_analysis
-        report += f"""
-**稳定性指标**：
-- 平均ARI (调整兰德指数): {stability['稳定性指标']['平均ARI']:.3f}
-- 平均NMI (标准化互信息): {stability['稳定性指标']['平均NMI']:.3f}
-- 平均一致性: {stability['稳定性指标']['平均一致性']:.3f}
-- ARI标准差: {stability['稳定性指标']['ARI标准差']:.3f}
-- NMI标准差: {stability['稳定性指标']['NMI标准差']:.3f}
-
-**噪声敏感性**：
-- 噪声水平范围: {stability['噪声敏感性']['噪声水平范围']}
-- ARI下降趋势: {stability['噪声敏感性']['ARI下降趋势']:.6f}
-- NMI下降趋势: {stability['噪声敏感性']['NMI下降趋势']:.6f}
-- 稳定性阈值: {stability['噪声敏感性']['稳定性阈值']}
-
-**稳定性评估**: {stability['稳定性评估']}
-"""
-
-    # 结论与建议
-    report += """
-## 6. 问题三特色分析的主要发现
-
-### 6.1 聚类驱动的误差特征
-1. **聚类特异性噪声**：不同BMI聚类组展现出不同的噪声特征，证实了分组分析的必要性
-2. **组间差异显著性**：统计检验揭示了聚类组间噪声特征的显著差异
-3. **GAMM误差传播**：基于GAMM预测的误差传播模型更准确地反映了实际检测过程
-
-### 6.2 聚类稳定性的影响
-1. **噪声敏感性**：聚类结果对噪声水平具有一定敏感性，但整体稳定性良好
-2. **阈值效应**：存在特定的噪声阈值，超过此阈值聚类稳定性显著下降
-3. **分组策略优化**：基于稳定性分析的结果可以优化聚类分组策略
-
-### 6.3 临床应用建议
-
-#### 针对不同聚类组的个体化策略：
-"""
-    
-    if analyzer.gamm_error_analysis and '各组结果' in analyzer.gamm_error_analysis:
-        groups_results = analyzer.gamm_error_analysis['各组结果']
-        for group_result in groups_results:
-            bias = group_result['时间偏差(周)']
-            rmse = group_result['RMSE(周)']
-            
-            if abs(bias) > 1.0 or rmse > 2.0:
-                recommendation = "建议增加检测频次和复检机制"
-            elif abs(bias) > 0.5 or rmse > 1.0:
-                recommendation = "建议适度增加监测密度"
-            else:
-                recommendation = "当前检测策略适宜"
-                
-            report += f"""
-- **{group_result['聚类组']}**: {recommendation}
-  - 理由：时间偏差{bias:+.1f}周，RMSE={rmse:.1f}周
-"""
-
-    report += f"""
-
-### 6.4 方法学优势
-
-1. **聚类特异性建模**：相比传统的全局误差分析，本方法能够捕捉不同BMI群体的特异性噪声特征
-2. **多层次误差分解**：GAMM误差、时间相关噪声、聚类内变异的分层分析提供了更细粒度的误差理解
-3. **稳定性验证**：通过噪声扰动测试验证了聚类方法的稳健性
-4. **整合性分析**：将预测模型、聚类分析和误差传播有机结合
-
-## 7. 技术说明
-
-- **分析基础**: {analysis_basis}
-- **噪声估计**: 聚类特异性多方法验证
-- **误差传播**: 基于GAMM预测的蒙特卡洛模拟
-- **稳定性验证**: 噪声扰动下的重采样分析
-- **统计检验**: ANOVA + Kruskal-Wallis + Cohen's d
-
----
-*报告生成时间: {pd.Timestamp.now().strftime('%Y-%m-%d %H:%M:%S')}*
-
-**注**: 本报告体现了问题三基于GAMM+KMeans聚类的独特分析视角，与问题二的传统误差分析形成了明显的方法学差异和互补性。
-"""
-
-    report_path = os.path.join(analyzer.error_dir, 'q3_gamm_kmeans_error_analysis_report.md')
-    with open(report_path, 'w', encoding='utf-8') as f:
-        f.write(report)
-    
-    return report
 
 def _interpret_cohens_d(cohens_d):
     if np.isnan(cohens_d):
@@ -1045,12 +754,10 @@ def build_cluster_groups(cluster_df: pd.DataFrame, n_clusters: int) -> pd.DataFr
             'BMI区间': f'BMI(标准化)∈[{bmi_min:.3f}, {bmi_max:.3f}]'
         })
     groups_df = pd.DataFrame(groups).sort_values('组别').reset_index(drop=True)
-    # 若传入的 n_clusters 与实际聚类标签不一致，按实际为准
     return groups_df
 
 
 def extract_true_times_by_cluster(cluster_df: pd.DataFrame) -> np.ndarray:
-    # 与 kmeans_bmi_segmentation.py 保持一致的去标准化参数
     time_mean = 16.846
     time_std = 4.076
 
@@ -1070,44 +777,19 @@ def main():
     data_file = os.path.join(SCRIPT_DIR, 'processed_data.csv')
     output_dir = os.path.join(SCRIPT_DIR, 'gamm_detection_error_analysis')
     os.makedirs(output_dir, exist_ok=True)
-    
-
-    
     bmi_analyzer = BMISegmentationAnalyzer(output_dir=output_dir + os.sep)
+    if not getattr(bmi_analyzer.gamm_predictor, 'use_r_gamm', False):
+        raise RuntimeError("R/mgcv GAMM 不可用。本分析严格依赖 R GAMM，请安装并配置 rpy2 与 R 包 mgcv。")
 
-    
-    try:
-        if not getattr(bmi_analyzer.gamm_predictor, 'use_r_gamm', False):
-            raise RuntimeError("R/mgcv GAMM 不可用。本分析严格依赖 R GAMM，请安装并配置 rpy2 与 R 包 mgcv。")
-    except AttributeError:
-        raise RuntimeError("无法确认 R/mgcv GAMM 可用性。本分析严格依赖 R GAMM，请安装并配置 rpy2 与 R 包 mgcv。")
-
-    
-    
     raw_df, target_df, X, y = bmi_analyzer.load_and_prepare_data(data_file)
-
     
     prediction_df = bmi_analyzer.train_gamm_and_predict(X, y, target_df)
-
     
     cluster_df = bmi_analyzer.perform_clustering(prediction_df, optimal_k=None)
-
     
     groups_df = build_cluster_groups(cluster_df, n_clusters=len(cluster_df['聚类标签'].unique()))
     true_times = extract_true_times_by_cluster(cluster_df)
-
-    
-
-    
     analyzer = Q3DetectionErrorAnalyzer(output_dir=output_dir)
-    
-    analyzer.report_context['analysis_basis'] = 'GAMM+KMeans聚类分组'
-    analyzer.report_context['report_title'] = '问题三（GAMM+KMeans）聚类驱动的检测误差分析报告'
-    
-    group_lines = [f"- 组别{int(r['组别'])}: {r['BMI区间']} | 中位达标时间≈{true_times[i]:.1f}周" for i, r in groups_df.iterrows()]
-    analyzer.report_context['group_summary'] = "\n".join(group_lines)
-
-    
     cluster_noise_summary, cluster_noise_df = analyzer.estimate_cluster_specific_noise(
         raw_df=raw_df,
         cluster_df=cluster_df,
@@ -1131,15 +813,10 @@ def main():
         raw_df=raw_df,
         cluster_df=cluster_df,
         bmi_analyzer=bmi_analyzer,
-        n_bootstrap=50  # 减少bootstrap次数以提高速度
+        n_bootstrap=50
     )
-
     
     create_q3_specialized_visualizations(analyzer, cluster_noise_df, sim_detail_df)
-    generate_q3_specialized_report(analyzer)
-
-    
-
 
 if __name__ == '__main__':
     main()
