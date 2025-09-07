@@ -1,26 +1,4 @@
-#!/usr/bin/env python3
-# -*- coding: utf-8 -*-
-"""
-基于ANOVA的特征选择，用于female_cleaned.csv
-- 读取由q4_female_processing.py生成的清洗后数据
-- 对每个数值特征与二元目标变量is_abnormal运行单因素方差分析(ANOVA)
-- 输出ANOVA报告和包含选定特征的过滤数据集
-
-设计选择:
-- 当--always_keep_z为True时，即使p值>阈值，也保留原始Z分数特征(13/18/21, X)
-- 默认情况下，如果SciPy可用，则通过p值进行阈值筛选；否则回退到使用eta平方阈值
-- 不覆盖原始清洗数据；使用不同名称写入新文件
-
-使用方法:
-  python q4_anova_feature_select.py \
-    --input_csv 4/female_cleaned.csv \
-    --out_dir 4 \
-    --p_threshold 0.05 \
-    --eta_threshold 0.01 \
-    --always_keep_z
-"""
 from __future__ import annotations
-
 import argparse
 from pathlib import Path
 from typing import Dict, Optional, Tuple
@@ -40,11 +18,7 @@ Z_COLS = [
     "13号染色体的Z值", "18号染色体的Z值", "21号染色体的Z值", "X染色体的Z值"
 ]
 
-
 def anova_two_groups(x: pd.Series, y: pd.Series) -> Tuple[float, float, int, int, Optional[float]]:
-    """Compute one-way ANOVA (two groups) F-statistic and p-value if SciPy available.
-    Returns: (F, eta_sq, df_between, df_within, p_value)
-    """
     mask = x.notna() & y.notna()
     x = x[mask]
     y = y[mask]
@@ -148,7 +122,6 @@ def main():
     report_csv = args.out_dir / "female_anova_report.csv"
     report_df.to_csv(report_csv, index=False)
 
-    # Build filtered dataset: keep ID, target, single chromo labels, selected features
     id_cols = [c for c in ["孕妇代码", "检测抽血次数"] if c in df.columns]
     single_chromo_labels = [c for c in ["ab_T13", "ab_T18", "ab_T21"] if c in df.columns]
     out_cols = id_cols + [args.target] + single_chromo_labels + selected
@@ -165,7 +138,6 @@ def main():
         "n_features_selected": len(selected),
         "have_scipy": _HAVE_SCIPY,
     })
-
 
 if __name__ == "__main__":
     main()
