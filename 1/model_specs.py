@@ -1,23 +1,8 @@
-#!/usr/bin/env python3
-# -*- coding: utf-8 -*-
-"""
-GAM 模型规格定义（简洁版）
-- 仅负责构建候选模型规格，不包含可视化、诊断或运行控制逻辑
-- 供 main.py 调用
-"""
-
 from pygam import LinearGAM, s, te, l
 
 __all__ = ["build_model_specs"]
 
-
 def build_model_specs(feature_names, n_splines_s=20, n_splines_te=10):
-    """构建系统化的候选模型规格：不强制引入l(3)/l(4)，按需比较；交互项包含单独与全对交互。
-    n_splines_s: 单变量平滑项基函数数量
-    n_splines_te: 交互张量项基函数数量（每维）
-    返回：{model_name: {"builder": callable, "features": list}}
-    """
-    # 假设前3个是连续变量：孕周、BMI、年龄
     core3 = feature_names[:3]
     has_preg = len(feature_names) > 3
     has_birth = len(feature_names) > 4

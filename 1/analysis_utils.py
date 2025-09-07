@@ -1,12 +1,10 @@
-#!/usr/bin/env python3
-# -*- coding: utf-8 -*-
 """
 分析与可视化工具函数：
 - 模型项摘要表 create_detailed_summary
 - 偏依赖图 create_partial_dependence_plots
-- 模型诊断 perform_model_diagnostics（残差图、QQ、正态性、异方差检验）
-- 重复K折交叉验证 cross_validate_all_models（可选保存每折预测与残差）
-- 整体模型近似F检验 compute_overall_f_test
+- 模型诊断 perform_model_diagnostics（你已经完成）
+- 重复K折交叉验证 cross_validate_all_models（你已经完成）
+- 整体模型近似F检验 compute_overall_f_test（你已经完成）
 - 捕获GAM summary 文本 get_model_summary_text
 """
 

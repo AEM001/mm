@@ -1,14 +1,6 @@
-#!/usr/bin/env python3
-# -*- coding: utf-8 -*-
-"""
-问题二：使用BMI分界值方法的检测误差分析
-展示如何使用新的分组策略进行检测误差分析
-"""
-
 import os
 import sys
 
-# 添加当前目录到路径
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 if SCRIPT_DIR not in sys.path:
     sys.path.insert(0, SCRIPT_DIR)
@@ -16,12 +8,8 @@ if SCRIPT_DIR not in sys.path:
 from detection_error_analysis import BMIBoundaryStrategy, run_error_analysis_with_strategy, compare_strategies
 
 def main():
-    """
-    运行BMI分界值方法的检测误差分析
-    """
     print("=== 问题二：BMI分界值分组的检测误差分析 ===")
     
-    # 方法1：单独运行BMI分界值策略
     print("\n1. 运行BMI分界值分组策略:")
     strategy = BMIBoundaryStrategy()
     data_file = os.path.join(SCRIPT_DIR, 'processed_data.csv')
@@ -44,7 +32,6 @@ def main():
         print(f"BMI分界值分组分析失败: {e}")
         print("这可能是由于缺少NIPTTimingOptimizer依赖或数据文件问题")
     
-    # 方法2：比较两种策略（如果都可用）
     print("\n2. 比较不同分组策略:")
     try:
         results = compare_strategies()
