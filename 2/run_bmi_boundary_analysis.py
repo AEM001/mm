@@ -8,9 +8,6 @@ if SCRIPT_DIR not in sys.path:
 from detection_error_analysis import BMIBoundaryStrategy, run_error_analysis_with_strategy, compare_strategies
 
 def main():
-    print("=== 问题二：BMI分界值分组的检测误差分析 ===")
-    
-    print("\n1. 运行BMI分界值分组策略:")
     strategy = BMIBoundaryStrategy()
     data_file = os.path.join(SCRIPT_DIR, 'processed_data.csv')
     
