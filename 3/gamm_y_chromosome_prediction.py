@@ -1,6 +1,3 @@
-#!/usr/bin/env python3
-# -*- coding: utf-8 -*-
-
 import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
@@ -18,8 +15,7 @@ import os
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from set_chinese_font import set_chinese_font
 set_chinese_font()
-plt.rcParams['font.sans-serif'] = ['DejaVu Sans']
-plt.rcParams['axes.unicode_minus'] = False
+
 
 import rpy2.robjects as robjects
 from rpy2.robjects import pandas2ri
@@ -286,11 +282,20 @@ class GAMMYChromosomePredictor:
     
     def _predict_r_gamm(self, X_new):
         data_dict = {}
-        for i, col in enumerate(self.feature_names):
+        n_features = min(len(self.feature_names), X_new.shape[1])
+        for i in range(n_features):
             data_dict[f'x{i+1}'] = X_new.iloc[:, i] if hasattr(X_new, 'iloc') else X_new[:, i]
 
-        with pandas2ri.converter.context():
-            r_newdata = robjects.DataFrame(data_dict)
+        # 转换为R兼容格式
+        r_data_dict = {}
+        for key, val in data_dict.items():
+            if hasattr(val, 'iloc'):  # pandas Series
+                r_data_dict[key] = robjects.FloatVector(val.tolist())
+            elif isinstance(val, np.ndarray):
+                r_data_dict[key] = robjects.FloatVector(val.tolist())
+            else:
+                r_data_dict[key] = robjects.FloatVector(val if isinstance(val, list) else [val])
+        r_newdata = robjects.DataFrame(r_data_dict)
 
         predictions = stats_r.predict(self.model, newdata=r_newdata)
 
@@ -497,8 +502,14 @@ class GAMMYChromosomePredictor:
                 mean_val = X.iloc[:, i].mean() if hasattr(X, 'iloc') else X[:, i].mean()
                 pred_data[f'x{i+1}'] = [mean_val] * n_points
 
-        with pandas2ri.converter.context():
-            r_pred_data = robjects.DataFrame(pred_data)
+        # 转换为R兼容格式
+        r_pred_data_dict = {}
+        for key, val in pred_data.items():
+            if isinstance(val, np.ndarray):
+                r_pred_data_dict[key] = robjects.FloatVector(val.tolist())
+            else:
+                r_pred_data_dict[key] = robjects.FloatVector(val if isinstance(val, list) else [val] * len(list(pred_data.values())[0]))
+        r_pred_data = robjects.DataFrame(r_pred_data_dict)
 
         predictions = mgcv.predict_gam(self.model, r_pred_data)
 

@@ -102,14 +102,17 @@ class Q3DetectionErrorAnalyzer:
     def _estimate_individual_noise(self, y_values, weeks, woman_code):
         n_measurements = len(y_values)
         signal_std = np.std(y_values)
-        if n_measurements >= 3:
+        if n_measurements >= 4:  # 需要至少4个点进行样条插值
             from scipy.interpolate import UnivariateSpline
-            spline = UnivariateSpline(weeks, y_values, s=0.1)
-            y_gamm_fitted = spline(weeks)
-            residuals_gamm = y_values - y_gamm_fitted
-            noise_gamm = np.std(residuals_gamm)
+            try:
+                spline = UnivariateSpline(weeks, y_values, s=0.1, k=min(3, n_measurements-1))
+                y_gamm_fitted = spline(weeks)
+                residuals_gamm = y_values - y_gamm_fitted
+                noise_gamm = np.std(residuals_gamm)
+            except:
+                noise_gamm = np.std(y_values)  # 备用方法
         else:
-            noise_gamm = np.nan
+            noise_gamm = np.std(y_values) if n_measurements > 1 else 0.0
         if n_measurements >= 3:
             weights = 1.0 / (1.0 + 0.1 * np.abs(np.diff(weeks, prepend=weeks[0])))
             y_weighted = np.average(y_values, weights=weights)
